@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { Asset, AiModel, ImageFormat, ImageProvider } from "../drizzle/schema";
 import { storagePut } from "./storage";
+import { ENV } from "./_core/env";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,13 +37,13 @@ export interface StoryContent {
 // ─── Claude Client ────────────────────────────────────────────────────────────
 
 function getAnthropicClient(): Anthropic {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = ENV.anthropicApiKey || process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY not configured");
   return new Anthropic({ apiKey });
 }
 
 function getOpenAIClient(): OpenAI {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = ENV.openaiApiKey || process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY not configured");
   return new OpenAI({ apiKey });
 }
@@ -110,32 +111,46 @@ Regeln:
 - Dialoge sollen natürlich und unterhaltsam sein
 - Slide 1: Hook/Einleitung, Slides 2-9: Story, Slide 10: Auflösung/Cliffhanger`;
 
-  const claudeModel = model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-5";
+  const claudeModel = model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
 
-  const response = await client.messages.create({
-    model: claudeModel,
-    max_tokens: 4096,
-    messages: [{ role: "user", content: userPrompt }],
-    system: systemPrompt,
-  });
+  // Retry with exponential backoff for overloaded errors (HTTP 529)
+  let lastError: Error = new Error("Unknown error");
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      const response = await client.messages.create({
+        model: claudeModel,
+        max_tokens: 4096,
+        messages: [{ role: "user", content: userPrompt }],
+        system: systemPrompt,
+      });
 
-  const content = response.content[0];
-  if (content.type !== "text") throw new Error("Unexpected response type from Claude");
+      const content = response.content[0];
+      if (content.type !== "text") throw new Error("Unexpected response type from Claude");
 
-  // Strip potential markdown code blocks
-  let jsonText = content.text.trim();
-  if (jsonText.startsWith("```")) {
-    jsonText = jsonText.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
+      // Strip potential markdown code blocks
+      let jsonText = content.text.trim();
+      if (jsonText.startsWith("```")) {
+        jsonText = jsonText.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
+      }
+
+      const parsed = JSON.parse(jsonText) as StoryContent;
+
+      // Validate structure
+      if (!parsed.title || !parsed.consistencyContext || !Array.isArray(parsed.slides) || parsed.slides.length !== 10) {
+        throw new Error("Invalid story structure returned from Claude");
+      }
+
+      return parsed;
+    } catch (err: unknown) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      const isOverloaded = lastError.message.includes("529") || lastError.message.includes("overloaded");
+      if (!isOverloaded || attempt === 4) throw lastError;
+      const delay = Math.pow(2, attempt) * 5000; // 10s, 20s, 40s
+      console.log(`[StoryService] Anthropic overloaded, retry ${attempt}/4 in ${delay/1000}s...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
   }
-
-  const parsed = JSON.parse(jsonText) as StoryContent;
-
-  // Validate structure
-  if (!parsed.title || !parsed.consistencyContext || !Array.isArray(parsed.slides) || parsed.slides.length !== 10) {
-    throw new Error("Invalid story structure returned from Claude");
-  }
-
-  return parsed;
+  throw lastError;
 }
 
 // ─── Image Generation via gpt-image-2 ────────────────────────────────────────

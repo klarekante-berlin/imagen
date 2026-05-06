@@ -166,7 +166,7 @@ describe("stories router", () => {
     const result = await caller.stories.create({
       theme: "Familie beim Frühstück",
       selectedAssetIds: [],
-      model: "claude-sonnet-4-5",
+      model: "claude-sonnet-4-6",
       imageFormat: "1:1",
       imageProvider: "gpt-image-2",
     });

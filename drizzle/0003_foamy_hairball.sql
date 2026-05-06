@@ -1,0 +1,1 @@
+ALTER TABLE `stories` MODIFY COLUMN `model` enum('claude-sonnet-4-6','claude-opus-4-5') NOT NULL DEFAULT 'claude-sonnet-4-6';

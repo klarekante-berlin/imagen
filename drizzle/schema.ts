@@ -69,7 +69,7 @@ export type StoryStatus = (typeof STORY_STATUSES)[number];
 export const IMAGE_FORMATS = ["1:1", "4:5"] as const;
 export type ImageFormat = (typeof IMAGE_FORMATS)[number];
 
-export const AI_MODELS = ["claude-sonnet-4-5", "claude-opus-4-5"] as const;
+export const AI_MODELS = ["claude-sonnet-4-6", "claude-opus-4-5"] as const;
 export type AiModel = (typeof AI_MODELS)[number];
 
 export const IMAGE_PROVIDERS = ["gpt-image-2", "freepik"] as const;
@@ -80,7 +80,7 @@ export const stories = mysqlTable("stories", {
   title: varchar("title", { length: 512 }).notNull(),
   theme: text("theme").notNull(),
   status: mysqlEnum("status", STORY_STATUSES).default("draft").notNull(),
-  model: mysqlEnum("model", AI_MODELS).default("claude-sonnet-4-5").notNull(),
+  model: mysqlEnum("model", AI_MODELS).default("claude-sonnet-4-6").notNull(),
   imageProvider: mysqlEnum("imageProvider", IMAGE_PROVIDERS).default("gpt-image-2").notNull(),
   imageFormat: mysqlEnum("imageFormat", IMAGE_FORMATS).default("1:1").notNull(),
   /**

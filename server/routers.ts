@@ -106,7 +106,7 @@ const storyRouter = router({
     .input(z.object({
       theme: z.string().min(1),
       selectedAssetIds: z.array(z.number()).default([]),
-      model: z.enum(["claude-sonnet-4-5", "claude-opus-4-5"]).default("claude-sonnet-4-5"),
+      model: z.enum(["claude-sonnet-4-6", "claude-opus-4-5"]).default("claude-sonnet-4-6"),
       imageFormat: z.enum(["1:1", "4:5"]).default("1:1"),
       imageProvider: z.enum(["gpt-image-2", "freepik"]).default("gpt-image-2"),
     }))

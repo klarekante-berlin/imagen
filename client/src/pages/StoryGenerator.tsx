@@ -49,7 +49,7 @@ export default function StoryGenerator() {
   const [, navigate] = useLocation();
   const [theme, setTheme] = useState("");
   const [selectedAssetIds, setSelectedAssetIds] = useState<number[]>([]);
-  const [model, setModel] = useState<"claude-sonnet-4-5" | "claude-opus-4-5">("claude-sonnet-4-5");
+  const [model, setModel] = useState<"claude-sonnet-4-6" | "claude-opus-4-5">("claude-sonnet-4-6");
   const [imageFormat, setImageFormat] = useState<"1:1" | "4:5">("1:1");
   const [imageProvider, setImageProvider] = useState<"gpt-image-2" | "freepik">("gpt-image-2");
   const [assetPickerOpen, setAssetPickerOpen] = useState(false);
@@ -136,7 +136,7 @@ export default function StoryGenerator() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="claude-sonnet-4-5">Claude Sonnet (schnell)</SelectItem>
+                  <SelectItem value="claude-sonnet-4-6">Claude Sonnet (schnell)</SelectItem>
                   <SelectItem value="claude-opus-4-5">Claude Opus (kreativ)</SelectItem>
                 </SelectContent>
               </Select>
