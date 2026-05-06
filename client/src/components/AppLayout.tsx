@@ -53,19 +53,19 @@ export default function AppLayout({ children }: AppLayoutProps) {
           {navItems.map(({ href, label, icon: Icon }) => {
             const isActive = location === href || (href !== "/" && location.startsWith(href));
             return (
-              <Link key={href} href={href}>
-                <a
-                  onClick={() => setMobileOpen(false)}
-                  className={cn(
-                    "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-sidebar-primary text-sidebar-primary-foreground"
-                      : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                  )}
-                >
-                  <Icon className="w-4 h-4 flex-shrink-0" />
-                  {label}
-                </a>
+              <Link
+                key={href}
+                href={href}
+                onClick={() => setMobileOpen(false)}
+                className={cn(
+                  "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                  isActive
+                    ? "bg-sidebar-primary text-sidebar-primary-foreground"
+                    : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                )}
+              >
+                <Icon className="w-4 h-4 flex-shrink-0" />
+                {label}
               </Link>
             );
           })}
@@ -93,12 +93,10 @@ export default function AppLayout({ children }: AppLayoutProps) {
               </Button>
             </div>
           ) : (
-            <a href={getLoginUrl()} className="block">
-              <Button variant="outline" className="w-full gap-2 text-sm">
-                <LogInIcon className="w-4 h-4" />
-                Anmelden
-              </Button>
-            </a>
+            <Button variant="outline" className="w-full gap-2 text-sm" onClick={() => window.location.href = getLoginUrl()}>
+              <LogInIcon className="w-4 h-4" />
+              Anmelden
+            </Button>
           )}
         </div>
       </aside>

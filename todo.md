@@ -73,5 +73,5 @@
 ## Deployment
 - [x] Secrets configured (OPENAI_API_KEY, ANTHROPIC_API_KEY, FREEPIK_API_KEY)
 - [x] 141 assets seeded into database from character sheets
-- [ ] GitHub push to klarekante-berlin/imagen
-- [ ] Checkpoint saved and published
+- [x] GitHub push to klarekante-berlin/imagen
+- [x] Checkpoint saved and published
