@@ -1,6 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import OpenAI from "openai";
-import { Asset, AiModel, ImageFormat, ImageProvider } from "../drizzle/schema";
+import { Asset, AiModel, ImageFormat } from "../drizzle/schema";
 import { storagePut } from "./storage";
 import { ENV } from "./_core/env";
 
@@ -15,8 +14,10 @@ export interface ConsistencyContext {
     name: string;
     outfit: string;
     visualDescription: string;
+    referenceImageUrl?: string; // URL of the character sheet for reference
   }>;
   globalStylePrompt: string;
+  styleReferenceUrls?: string[]; // Style reference images (e.g. Mitchells)
 }
 
 export interface SlideContent {
@@ -34,7 +35,14 @@ export interface StoryContent {
   usedAssetIds: number[];
 }
 
-// ─── Claude Client ────────────────────────────────────────────────────────────
+export interface DetectedCharacter {
+  name: string;
+  role: string; // e.g. "Podcast-Host", "Politiker", "Kind"
+  suggestedAssetId: number | null;
+  confidence: "high" | "medium" | "low";
+}
+
+// ─── Anthropic Client ─────────────────────────────────────────────────────────
 
 function getAnthropicClient(): Anthropic {
   const apiKey = ENV.anthropicApiKey || process.env.ANTHROPIC_API_KEY;
@@ -42,10 +50,151 @@ function getAnthropicClient(): Anthropic {
   return new Anthropic({ apiKey });
 }
 
-function getOpenAIClient(): OpenAI {
-  const apiKey = ENV.openaiApiKey || process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY not configured");
-  return new OpenAI({ apiKey });
+// ─── Atlas Cloud Image Generation (gpt-image-2) ───────────────────────────────
+
+const ATLAS_BASE = "https://api.atlascloud.ai/api/v1";
+const ATLAS_MODEL = "openai/gpt-image-2/text-to-image";
+
+function getAtlasKey(): string {
+  const key = ENV.atlascloudApiKey || process.env.ATLASCLOUD_API_KEY;
+  if (!key) throw new Error("ATLASCLOUD_API_KEY not configured");
+  return key;
+}
+
+async function atlasGenerateImage(params: {
+  prompt: string;
+  size: string;
+  quality?: string;
+  referenceImageUrls?: string[]; // Character sheets + style references
+}): Promise<string> {
+  const key = getAtlasKey();
+
+  const body: Record<string, unknown> = {
+    model: ATLAS_MODEL,
+    prompt: params.prompt,
+    size: params.size,
+    quality: params.quality ?? "high",
+    output_format: "jpeg",
+    enable_base64_output: false,
+    enable_sync_mode: false,
+  };
+
+  // Pass reference images if provided (character sheets + style refs)
+  if (params.referenceImageUrls && params.referenceImageUrls.length > 0) {
+    body.reference_images = params.referenceImageUrls.slice(0, 4); // max 4
+  }
+
+  // Step 1: Submit generation job
+  const submitRes = await fetch(`${ATLAS_BASE}/model/generateImage`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!submitRes.ok) {
+    const err = await submitRes.text();
+    throw new Error(`Atlas Cloud submit error ${submitRes.status}: ${err}`);
+  }
+
+  const submitData = await submitRes.json() as { code: number; msg: string; data?: { id: string } };
+  if (!submitData.data?.id) {
+    throw new Error(`Atlas Cloud submit failed: ${submitData.msg}`);
+  }
+
+  const predictionId = submitData.data.id;
+
+  // Step 2: Poll for result (max 4 minutes, every 5 seconds)
+  const pollUrl = `${ATLAS_BASE}/model/prediction/${predictionId}`;
+  for (let i = 0; i < 48; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+
+    const pollRes = await fetch(pollUrl, {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+
+    if (!pollRes.ok) continue;
+
+    const pollData = await pollRes.json() as {
+      data?: { status: string; outputs?: string[]; error?: string };
+    };
+    const status = pollData.data?.status;
+
+    if (status === "completed") {
+      const url = pollData.data?.outputs?.[0];
+      if (!url) throw new Error("Atlas Cloud: completed but no output URL");
+      return url;
+    }
+
+    if (status === "failed") {
+      throw new Error(`Atlas Cloud generation failed: ${pollData.data?.error ?? "unknown"}`);
+    }
+    // still processing – continue polling
+  }
+
+  throw new Error("Atlas Cloud: generation timed out after 4 minutes");
+}
+
+// ─── Auto Character Detection ─────────────────────────────────────────────────
+
+/**
+ * Uses Claude to detect characters in a script/theme and match them to assets.
+ * Returns detected characters with suggested asset IDs.
+ */
+export async function detectCharactersFromScript(
+  scriptOrTheme: string,
+  availableAssets: Asset[]
+): Promise<DetectedCharacter[]> {
+  const client = getAnthropicClient();
+
+  const assetList = availableAssets
+    .map((a) => `ID:${a.id} | "${a.name}" | Kategorie: ${a.category} | ${a.description || ""}`)
+    .join("\n");
+
+  const prompt = `Analysiere dieses Skript/Thema und erkenne alle Charaktere darin.
+Dann ordne jeden Charakter dem passendsten Asset aus der Liste zu.
+
+SKRIPT/THEMA:
+${scriptOrTheme}
+
+VERFÜGBARE ASSETS:
+${assetList}
+
+Antworte als JSON-Array ohne Markdown:
+[
+  {
+    "name": "Charaktername wie im Skript",
+    "role": "Rolle/Funktion (z.B. Podcast-Host, Politiker, Kind, Hund)",
+    "suggestedAssetId": <Asset-ID oder null wenn kein passendes Asset>,
+    "confidence": "high|medium|low"
+  }
+]
+
+Matching-Regeln:
+- "Toni" oder "Host" oder "Moderator" → suche nach dad/family/host Assets
+- Historische Persönlichkeiten (Scholz, Merkel, etc.) → historische-persoenlichkeit oder politiker Assets
+- Sportler → sport-athleten Assets
+- Musiker → musik-legenden oder moderne-popstars Assets
+- Kinder → the-boy oder lily oder girl Assets
+- Tiere → pug, cat, tiere Assets
+- Nur Charaktere die wirklich im Skript vorkommen, keine erfundenen`;
+
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 1000,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  const text = response.content[0].type === "text" ? response.content[0].text.trim() : "[]";
+  const cleaned = text.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
+
+  try {
+    return JSON.parse(cleaned) as DetectedCharacter[];
+  } catch {
+    return [];
+  }
 }
 
 // ─── Story Text Generation ────────────────────────────────────────────────────
@@ -58,60 +207,97 @@ export async function generateStoryText(
 ): Promise<StoryContent> {
   const client = getAnthropicClient();
 
-  const assetDescriptions = selectedAssets.map((a) =>
-    `- ${a.name} (${a.category}): ${a.visualDescription || a.description || "Kein Beschreibung"}`
-  ).join("\n");
+  const assetDescriptions = selectedAssets
+    .map(
+      (a) =>
+        `- ID:${a.id} | "${a.name}" (${a.category}): ${a.visualDescription || a.description || "Keine Beschreibung"}`
+    )
+    .join("\n");
 
-  const aspectRatio = imageFormat === "1:1" ? "quadratisch (1080x1080px)" : "hochformat (1080x1350px)";
+  const aspectRatio =
+    imageFormat === "1:1" ? "quadratisch 1080x1080px" : "Hochformat 1080x1350px";
 
-  const systemPrompt = `Du bist ein kreativer Storyteller für Instagram Carousel Stories. 
-Du erstellst in sich geschlossene, konsistente Geschichten mit genau 10 Slides.
-Wichtig: Outfits, Umgebungen und Charaktereigenschaften bleiben in der gesamten Story konstant – kein Wechsel!
-Die Bildformate sind ${aspectRatio}.
+  const systemPrompt = `Du bist ein erfahrener Content-Stratege für Instagram Carousel Stories im Stil des Formats "Hey was war denn das?" von klarekante.berlin.
+
+DEIN STIL:
+- Berliner Direktheit: kein Bullshit, kein Wellness-Coach-Sprech
+- Satirisch und trocken wie Ricky Gervais – aber mit Herz
+- Zahlen und Fakten als Schockmomente ("41 FUCKING PROZENT!")
+- Persönliche Anekdoten als emotionale Auflösung
+- Jeder Slide hat eine klare Aussage – kein Fülltext
+- Dialoge sind knapp, pointiert, real
+
+CAROUSEL-STRUKTUR (10 Slides):
+- Slide 1: HOOK – ein Satz der sofort trifft, Frage oder provokante These
+- Slide 2-3: KONTEXT – das Problem in Zahlen/Fakten aufbauen
+- Slide 4-5: ESKALATION – die Absurdität des Systems zeigen
+- Slide 6-7: WENDEPUNKT – persönliche Geschichte oder konkretes Beispiel
+- Slide 8-9: AUFLÖSUNG – die eigentliche Botschaft, ehrlich und direkt
+- Slide 10: CTA – Aufruf zum Folgen, Kommentieren oder Teilen
+
+KONSISTENZ-REGELN:
+- Outfits, Umgebungen und Charaktere bleiben in ALLEN 10 Slides identisch
+- Kein Outfit-Wechsel, kein Setting-Wechsel innerhalb einer Story
+- Der Bildstil ist 3D-Cartoon-Render im Pixar/Mitchell's-Stil – warm, expressiv, detailreich
+
+TEXT-OVERLAY-REGELN:
+- textContent erscheint DIREKT IM BILD als großer, lesbarer Text
+- Max 2-3 kurze Sätze – kein Fließtext
+- Darf Zahlen, Ausrufezeichen, Kursivschrift-Hinweise enthalten
+- Muss auch ohne Bild verständlich sein
+
 Antworte IMMER als valides JSON ohne Markdown-Codeblöcke.`;
 
-  const userPrompt = `Erstelle eine Instagram Carousel Story zum Thema: "${theme}"
+  const userPrompt = `Erstelle ein Instagram Carousel zum Thema: "${theme}"
 
-Verfügbare Charaktere und Assets:
-${assetDescriptions || "Keine spezifischen Charaktere ausgewählt – erfinde passende Charaktere."}
+${
+  selectedAssets.length > 0
+    ? `Charaktere und Assets für diese Story (verwende diese exakt):
+${assetDescriptions}
+
+WICHTIG: Die assetId in den Charakteren muss mit den IDs oben übereinstimmen!`
+    : "Keine spezifischen Charaktere ausgewählt – erfinde passende Charaktere die zum Thema passen."
+}
+
+Bildformat: ${aspectRatio}
 
 Erstelle eine JSON-Antwort mit dieser exakten Struktur:
 {
-  "title": "Kurzer, einprägsamer Story-Titel",
+  "title": "Kurzer, einprägsamer Carousel-Titel (max 5 Wörter)",
   "consistencyContext": {
-    "artStyle": "Detaillierter Kunststil für alle Bilder (z.B. 'flat design cartoon, bold outlines, vibrant colors, 2D animation style')",
-    "colorPalette": "Farbpalette die durch alle Slides konsistent bleibt",
-    "environment": "Hauptumgebung/Setting der Story",
+    "artStyle": "3D cartoon render, Pixar animation style, expressive faces, bold outlines, warm cinematic lighting, detailed textures, Mitchell's vs the Machines aesthetic",
+    "colorPalette": "Beschreibe die Farbpalette die zu diesem spezifischen Thema und Setting passt (aus der Szene entstehend, nicht aufgezwungen)",
+    "environment": "Hauptumgebung/Setting das in ALLEN Slides gleich bleibt – sehr spezifisch beschreiben",
     "characters": [
       {
         "assetId": <ID aus den verfügbaren Assets oder 0 wenn kein Asset>,
         "name": "Charaktername",
-        "outfit": "Exakte Outfit-Beschreibung die in ALLEN Slides gleich bleibt",
-        "visualDescription": "Vollständige visuelle Beschreibung des Charakters"
+        "outfit": "EXAKTE Outfit-Beschreibung die in ALLEN Slides identisch bleibt – sehr detailliert",
+        "visualDescription": "Vollständige visuelle Beschreibung: Körperbau, Gesicht, Haare, Alter, Ausdruck – sehr detailliert für Bildgenerierung"
       }
     ],
-    "globalStylePrompt": "Übergreifender Style-Prompt der in jeden Bildprompt eingefügt wird für maximale Konsistenz"
+    "globalStylePrompt": "Einziger konsistenter Style-String für ALLE Slides. Enthält: Rendering-Stil, Charakterbeschreibungen mit Outfits, Setting. Englisch. Max 100 Wörter."
   },
   "slides": [
     {
       "slideNumber": 1,
-      "textContent": "Text/Dialog der auf dem Slide erscheint (max 3 kurze Sätze)",
-      "caption": "Kurze Bildunterschrift oder Emoji-Caption für Instagram",
-      "charactersInSlide": ["Name der Charaktere die in diesem Slide vorkommen"],
-      "imagePrompt": "Detaillierter Bildprompt für diesen Slide (auf Englisch, da die Bild-API Englisch bevorzugt)"
+      "textContent": "TEXT DER DIREKT IM BILD ERSCHEINT – max 2-3 kurze Sätze auf Deutsch. Provokant, witzig oder emotional.",
+      "caption": "Instagram-Caption für diesen Slide (1-2 Sätze + Emojis)",
+      "charactersInSlide": ["Namen der Charaktere in diesem Slide"],
+      "imagePrompt": "Detaillierter Bildprompt auf Englisch. Szene + Charaktere + Aktion + Ausdruck. MUSS enthalten: 1) globalStylePrompt, 2) Outfit-Details der vorkommenden Charaktere, 3) die exakte Szene, 4) den deutschen textContent als großen lesbaren Text im Bild (bold, clear, readable font, positioned at bottom or top third)"
     }
   ],
   "usedAssetIds": [<IDs der verwendeten Assets>]
 }
 
-Regeln:
+WICHTIG:
 - Genau 10 Slides
-- Die Story muss einen klaren Anfang, Mittelteil und Ende haben
-- Jeder imagePrompt muss den globalStylePrompt und die Outfit-Beschreibungen der vorkommenden Charaktere enthalten
-- Dialoge sollen natürlich und unterhaltsam sein
-- Slide 1: Hook/Einleitung, Slides 2-9: Story, Slide 10: Auflösung/Cliffhanger`;
+- Jeder imagePrompt MUSS den textContent als Text-Overlay im Bild enthalten
+- Jeder imagePrompt MUSS die Outfit-Details der vorkommenden Charaktere enthalten
+- Die Story muss einen echten narrativen Bogen haben: Hook → Aufbau → Eskalation → Wendung → Auflösung → CTA`;
 
-  const claudeModel = model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
+  const claudeModel =
+    model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
 
   // Retry with exponential backoff for overloaded errors (HTTP 529)
   let lastError: Error = new Error("Unknown error");
@@ -119,7 +305,7 @@ Regeln:
     try {
       const response = await client.messages.create({
         model: claudeModel,
-        max_tokens: 4096,
+        max_tokens: 8000,
         messages: [{ role: "user", content: userPrompt }],
         system: systemPrompt,
       });
@@ -136,24 +322,34 @@ Regeln:
       const parsed = JSON.parse(jsonText) as StoryContent;
 
       // Validate structure
-      if (!parsed.title || !parsed.consistencyContext || !Array.isArray(parsed.slides) || parsed.slides.length !== 10) {
-        throw new Error("Invalid story structure returned from Claude");
+      if (
+        !parsed.title ||
+        !parsed.consistencyContext ||
+        !Array.isArray(parsed.slides) ||
+        parsed.slides.length !== 10
+      ) {
+        throw new Error(
+          `Invalid story structure: got ${parsed.slides?.length ?? 0} slides, expected 10`
+        );
       }
 
       return parsed;
     } catch (err: unknown) {
       lastError = err instanceof Error ? err : new Error(String(err));
-      const isOverloaded = lastError.message.includes("529") || lastError.message.includes("overloaded");
+      const isOverloaded =
+        lastError.message.includes("529") || lastError.message.includes("overloaded");
       if (!isOverloaded || attempt === 4) throw lastError;
       const delay = Math.pow(2, attempt) * 5000; // 10s, 20s, 40s
-      console.log(`[StoryService] Anthropic overloaded, retry ${attempt}/4 in ${delay/1000}s...`);
-      await new Promise(resolve => setTimeout(resolve, delay));
+      console.log(
+        `[StoryService] Anthropic overloaded, retry ${attempt}/4 in ${delay / 1000}s...`
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
   throw lastError;
 }
 
-// ─── Image Generation via gpt-image-2 ────────────────────────────────────────
+// ─── Image Generation via Atlas Cloud (gpt-image-2) with Reference Images ────
 
 export async function generateSlideImage(
   slidePrompt: string,
@@ -161,67 +357,56 @@ export async function generateSlideImage(
   slideNumber: number,
   storyId: number,
   imageFormat: ImageFormat,
-  referenceImageUrls: string[] = []
+  characterReferenceUrls: string[] = [], // Character sheet URLs for this slide's characters
+  styleReferenceUrls: string[] = []      // Global style reference URLs
 ): Promise<{ imageKey: string; imageUrl: string }> {
-  const client = getOpenAIClient();
 
+  // Build the full prompt with text overlay instruction
+  const fullPrompt = [
+    consistencyContext.globalStylePrompt,
+    slidePrompt,
+    `Setting: ${consistencyContext.environment}.`,
+    `Art style: ${consistencyContext.artStyle}.`,
+    `Slide ${slideNumber} of 10.`,
+    "High quality 3D render, cinematic composition, sharp details.",
+    "Text must be large, bold, clearly readable, positioned in the lower or upper third of the image.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  // Combine reference images: character sheets first, then style references
+  // gpt-image-2 via Atlas Cloud accepts up to 4 reference images
+  const allReferenceUrls = [
+    ...characterReferenceUrls.slice(0, 2), // max 2 character sheets
+    ...styleReferenceUrls.slice(0, 2),     // max 2 style references
+  ].filter(Boolean).slice(0, 4);
+
+  // gpt-image-2 via Atlas Cloud supports 1024x1024 and 1024x1536
   const size = imageFormat === "1:1" ? "1024x1024" : "1024x1536";
 
-  // Build the full prompt with consistency context
-  const fullPrompt = `${consistencyContext.globalStylePrompt}. ${slidePrompt}. Art style: ${consistencyContext.artStyle}. Color palette: ${consistencyContext.colorPalette}. Setting: ${consistencyContext.environment}. Instagram carousel slide ${slideNumber}/10. High quality, consistent character design throughout.`;
+  console.log(`[StoryService] Generating slide ${slideNumber} with ${allReferenceUrls.length} reference images`);
 
-  let imageBuffer: Buffer;
+  // Generate via Atlas Cloud
+  const atlasUrl = await atlasGenerateImage({
+    prompt: fullPrompt,
+    size,
+    quality: "high",
+    referenceImageUrls: allReferenceUrls.length > 0 ? allReferenceUrls : undefined,
+  });
 
-  if (referenceImageUrls.length > 0) {
-    // Use image editing endpoint with reference images
-    const imageFiles = await Promise.all(
-      referenceImageUrls.slice(0, 4).map(async (url) => {
-        const response = await fetch(url);
-        const buffer = await response.arrayBuffer();
-        return new File([buffer], `ref-${Date.now()}.png`, { type: "image/png" });
-      })
-    );
+  // Download the image from Atlas CDN
+  const imgResponse = await fetch(atlasUrl);
+  if (!imgResponse.ok) throw new Error(`Failed to download image from Atlas CDN: ${imgResponse.status}`);
+  const imageBuffer = Buffer.from(await imgResponse.arrayBuffer());
 
-    const editResponse = await client.images.edit({
-      model: "gpt-image-2",
-      image: imageFiles[0],
-      prompt: fullPrompt,
-      size: size as "1024x1024" | "1024x1536",
-    });
-
-    const imageData = editResponse.data?.[0];
-    if (!imageData) throw new Error("No image data returned from gpt-image-2");
-
-    if (imageData.b64_json) {
-      imageBuffer = Buffer.from(imageData.b64_json, "base64");
-    } else if (imageData.url) {
-      const imgResponse = await fetch(imageData.url);
-      imageBuffer = Buffer.from(await imgResponse.arrayBuffer());
-    } else {
-      throw new Error("No image data in response");
-    }
-  } else {
-    // Generate from text only
-    const genResponse = await client.images.generate({
-      model: "gpt-image-2",
-      prompt: fullPrompt,
-      size: size as "1024x1024" | "1024x1536",
-      response_format: "b64_json",
-    });
-
-    const imageData = genResponse.data?.[0];
-    if (!imageData?.b64_json) throw new Error("No image data returned from gpt-image-2");
-    imageBuffer = Buffer.from(imageData.b64_json, "base64");
-  }
-
-  // Upload to storage
-  const key = `stories/${storyId}/slide-${slideNumber}-${Date.now()}.png`;
-  const { url } = await storagePut(key, imageBuffer, "image/png");
+  // Upload to Manus storage
+  const key = `stories/${storyId}/slide-${slideNumber}-${Date.now()}.jpg`;
+  const { url } = await storagePut(key, imageBuffer, "image/jpeg");
 
   return { imageKey: key, imageUrl: url };
 }
 
-// ─── Freepik Image Generation ─────────────────────────────────────────────────
+// ─── Freepik Image Generation (fallback) ─────────────────────────────────────
 
 export async function generateSlideImageFreepik(
   slidePrompt: string,
@@ -233,8 +418,7 @@ export async function generateSlideImageFreepik(
   const apiKey = process.env.FREEPIK_API_KEY;
   if (!apiKey) throw new Error("FREEPIK_API_KEY not configured");
 
-  const fullPrompt = `${consistencyContext.globalStylePrompt}. ${slidePrompt}. Art style: ${consistencyContext.artStyle}. Color palette: ${consistencyContext.colorPalette}.`;
-
+  const fullPrompt = `${consistencyContext.globalStylePrompt}. ${slidePrompt}. Art style: ${consistencyContext.artStyle}.`;
   const aspectRatio = imageFormat === "1:1" ? "square_1_1" : "portrait_4_5";
 
   const response = await fetch("https://api.freepik.com/v1/ai/text-to-image", {
@@ -256,7 +440,7 @@ export async function generateSlideImageFreepik(
     throw new Error(`Freepik API error: ${err}`);
   }
 
-  const data = await response.json() as { data: Array<{ base64: string }> };
+  const data = (await response.json()) as { data: Array<{ base64: string }> };
   const base64 = data.data?.[0]?.base64;
   if (!base64) throw new Error("No image data from Freepik");
 
@@ -267,9 +451,12 @@ export async function generateSlideImageFreepik(
   return { imageKey: key, imageUrl: url };
 }
 
-// ─── Character Detection ──────────────────────────────────────────────────────
+// ─── Character Detection (simple text matching) ───────────────────────────────
 
-export function detectCharactersInText(text: string, characters: ConsistencyContext["characters"]): string[] {
+export function detectCharactersInText(
+  text: string,
+  characters: ConsistencyContext["characters"]
+): string[] {
   const found: string[] = [];
   for (const char of characters) {
     if (text.toLowerCase().includes(char.name.toLowerCase())) {
@@ -277,4 +464,36 @@ export function detectCharactersInText(text: string, characters: ConsistencyCont
     }
   }
   return found;
+}
+
+// ─── Presigned URL Helper ─────────────────────────────────────────────────────
+
+/**
+ * Converts a relative /manus-storage/... URL to an absolute presigned CloudFront URL.
+ * Atlas Cloud requires absolute URLs for reference_images.
+ */
+export async function getPresignedStorageUrl(relativeOrAbsoluteUrl: string): Promise<string | null> {
+  if (!relativeOrAbsoluteUrl) return null;
+  // Already absolute (e.g. https://...)
+  if (relativeOrAbsoluteUrl.startsWith("http")) return relativeOrAbsoluteUrl;
+  // Extract the key from /manus-storage/<key>
+  const key = relativeOrAbsoluteUrl.replace(/^\/manus-storage\//, "");
+  if (!key) return null;
+
+  const forgeApiUrl = ENV.forgeApiUrl;
+  const forgeApiKey = ENV.forgeApiKey;
+  if (!forgeApiUrl || !forgeApiKey) return null;
+
+  try {
+    const forgeUrl = new URL("v1/storage/presign/get", forgeApiUrl.replace(/\/+$/, "") + "/");
+    forgeUrl.searchParams.set("path", key);
+    const res = await fetch(forgeUrl, {
+      headers: { Authorization: `Bearer ${forgeApiKey}` },
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as { url?: string };
+    return data.url ?? null;
+  } catch {
+    return null;
+  }
 }

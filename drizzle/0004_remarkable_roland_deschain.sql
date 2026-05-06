@@ -1,0 +1,1 @@
+ALTER TABLE `assets` MODIFY COLUMN `category` enum('familie','historisch','sport','musik','politiker','tech-ceo','tiere','umgebungen','fahrzeuge','items','stil-referenz','sonstiges') NOT NULL DEFAULT 'sonstiges';

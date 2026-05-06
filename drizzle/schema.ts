@@ -36,6 +36,7 @@ export const ASSET_CATEGORIES = [
   "umgebungen",
   "fahrzeuge",
   "items",
+  "stil-referenz",
   "sonstiges",
 ] as const;
 

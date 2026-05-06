@@ -75,3 +75,21 @@
 - [x] 141 assets seeded into database from character sheets
 - [x] GitHub push to klarekante-berlin/imagen
 - [x] Checkpoint saved and published
+
+## Phase 2 – Fixes & Verbesserungen
+- [x] OpenAI → Atlas Cloud gpt-image-2 umgestellt (OpenAI verlangt Org-Verifikation)
+- [x] Story-Prompt überarbeiten: narrativer Fluss (Hook → Eskalation → Auflösung → CTA)
+- [x] Prompt-Stil anpassen: "Hey was war denn das?" Format (Berliner Komik, Gervais-Stil)
+- [x] Ende-zu-Ende Test: Story + 3 Bilder via Atlas Cloud gpt-image-2 generiert
+- [x] Atlas Cloud API Key konfiguriert
+- [x] Anthropic API Key direkt eingetragen und verifiziert
+
+## Phase 3 – Reference-Image-Pipeline & Auto-Detection
+- [x] Auto-Character-Detection: Claude analysiert Skript und matcht Charaktere mit Asset-Library (Name + semantisch)
+- [x] Character Sheets als Referenz-URLs an gpt-image-2 via Atlas Cloud übergeben (reference_images[])
+- [x] Stil-Referenz-Bilder (Mitchells etc.) als visuelle Referenz in Image-Prompt einbauen
+- [x] Text-Overlay direkt im Bild: textContent als Teil des Image-Prompts (große Schrift)
+- [x] Character-Matching UI: App zeigt automatisch erkannte Charaktere, manuelle Korrektur möglich
+- [x] Asset-Storage-URLs: Presigned CloudFront URLs für Atlas Cloud reference_images
+- [x] E2E-Test bestanden: Slide 1 (Scholz, 55s) + Slide 10 (Toni, 125s) erfolgreich generiert
+- [x] Polling-Timeout: 4 Minuten (48 × 5s) für komplexe Mehrcharakter-Szenen

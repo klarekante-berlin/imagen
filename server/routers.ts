@@ -11,7 +11,7 @@ import {
 import { storagePut } from "./storage";
 import {
   generateStoryText, generateSlideImage, generateSlideImageFreepik,
-  ConsistencyContext,
+  ConsistencyContext, detectCharactersFromScript, getPresignedStorageUrl,
 } from "./storyService";
 import { ASSET_CATEGORIES } from "../drizzle/schema";
 import type { TRPCError } from "@trpc/server";
@@ -84,6 +84,31 @@ const assetRouter = router({
     }),
 
   categories: publicProcedure.query(() => ASSET_CATEGORIES),
+});
+
+// ─── Detect Characters Router ───────────────────────────────────────────────
+
+const detectRouter = router({
+  detectCharacters: publicProcedure
+    .input(z.object({
+      scriptOrTheme: z.string().min(1),
+    }))
+    .mutation(async ({ input }) => {
+      // Load all assets for matching
+      const allAssets = await getAssets();
+      const detected = await detectCharactersFromScript(input.scriptOrTheme, allAssets);
+
+      // Enrich with asset details
+      const enriched = await Promise.all(
+        detected.map(async (d) => {
+          if (!d.suggestedAssetId) return { ...d, asset: null };
+          const asset = await getAssetById(d.suggestedAssetId);
+          return { ...d, asset: asset ?? null };
+        })
+      );
+
+      return enriched;
+    }),
 });
 
 // ─── Story Router ─────────────────────────────────────────────────────────────
@@ -210,18 +235,41 @@ const generateRouter = router({
 
       const ctx = story.consistencyContext as ConsistencyContext;
 
-      // Get reference image URLs from used assets
+      // Get all used assets with their image URLs for reference
       const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
-      const referenceUrls = usedAssets
-        .filter((a) => a.imageUrl)
-        .map((a) => a.imageUrl)
-        .slice(0, 4);
+
+       // Build a map: characterName -> presigned absolute URL for Atlas Cloud reference_images
+      const characterAssetMap = new Map<string, string>();
+      for (const char of (ctx.characters || [])) {
+        if (char.assetId && char.assetId > 0) {
+          const asset = usedAssets.find((a) => a.id === char.assetId);
+          if (asset?.imageUrl) {
+            // Convert relative /manus-storage/... to absolute presigned URL
+            const presignedUrl = await getPresignedStorageUrl(asset.imageUrl);
+            if (presignedUrl) characterAssetMap.set(char.name.toLowerCase(), presignedUrl);
+          }
+        }
+      }
+      // Style reference: use assets from 'stil-referenz' category (Mitchells etc.)
+      const styleRefAssets = usedAssets.filter(
+        (a) => a.category === "stil-referenz"
+      );
+      const styleReferenceUrls = (
+        await Promise.all(styleRefAssets.slice(0, 1).map((a) => getPresignedStorageUrl(a.imageUrl ?? "")))
+      ).filter((u): u is string => !!u);
 
       let errorCount = 0;
       for (const slide of storySlides) {
         if (!slide.imagePrompt) continue;
         try {
           await updateSlide(slide.id, { status: "generating" });
+
+          // Get character reference images for this specific slide
+          const slideCharacters = (slide.charactersInSlide as string[] || []);
+          const charRefUrls = slideCharacters
+            .map((name) => characterAssetMap.get(name.toLowerCase()))
+            .filter((url): url is string => !!url)
+            .slice(0, 2); // max 2 character refs per slide
 
           let result: { imageKey: string; imageUrl: string };
           if (story.imageProvider === "freepik") {
@@ -230,7 +278,9 @@ const generateRouter = router({
             );
           } else {
             result = await generateSlideImage(
-              slide.imagePrompt, ctx, slide.slideNumber, input.storyId, story.imageFormat, referenceUrls
+              slide.imagePrompt, ctx, slide.slideNumber, input.storyId, story.imageFormat,
+              charRefUrls,
+              styleReferenceUrls
             );
           }
 
@@ -266,8 +316,29 @@ const generateRouter = router({
 
       const ctx = story.consistencyContext as ConsistencyContext;
       const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
-      const referenceUrls = usedAssets.filter((a) => a.imageUrl).map((a) => a.imageUrl).slice(0, 4);
 
+       // Build character reference map with presigned absolute URLs for Atlas Cloud
+      const characterAssetMap = new Map<string, string>();
+      for (const char of (ctx.characters || [])) {
+        if (char.assetId && char.assetId > 0) {
+          const asset = usedAssets.find((a) => a.id === char.assetId);
+          if (asset?.imageUrl) {
+            const presignedUrl = await getPresignedStorageUrl(asset.imageUrl);
+            if (presignedUrl) characterAssetMap.set(char.name.toLowerCase(), presignedUrl);
+          }
+        }
+      }
+      const slideCharacters = (slide.charactersInSlide as string[] || []);
+      const charRefUrls = slideCharacters
+        .map((name) => characterAssetMap.get(name.toLowerCase()))
+        .filter((url): url is string => !!url)
+        .slice(0, 2);
+
+      // Style reference: use assets from 'stil-referenz' category
+      const styleRefAssets = usedAssets.filter((a) => a.category === "stil-referenz");
+      const styleReferenceUrls = (
+        await Promise.all(styleRefAssets.slice(0, 1).map((a) => getPresignedStorageUrl(a.imageUrl ?? "")))
+      ).filter((u): u is string => !!u);
       await updateSlide(input.slideId, { status: "generating" });
 
       let result: { imageKey: string; imageUrl: string };
@@ -277,7 +348,8 @@ const generateRouter = router({
         );
       } else {
         result = await generateSlideImage(
-          slide.imagePrompt, ctx, slide.slideNumber, slide.storyId, story.imageFormat, referenceUrls
+          slide.imagePrompt, ctx, slide.slideNumber, slide.storyId, story.imageFormat,
+          charRefUrls, styleReferenceUrls
         );
       }
 
@@ -333,6 +405,7 @@ export const appRouter = router({
   stories: storyRouter,
   generate: generateRouter,
   export: exportRouter,
+  detect: detectRouter,
 });
 
 export type AppRouter = typeof appRouter;

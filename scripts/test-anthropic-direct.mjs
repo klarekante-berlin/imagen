@@ -4,7 +4,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { readFileSync, writeFileSync } from "fs";
 
-const API_KEY = "REDACTED_API_KEY";
+const API_KEY = "REDACTED";
 
 const client = new Anthropic({ apiKey: API_KEY });
 

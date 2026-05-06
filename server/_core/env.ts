@@ -9,4 +9,5 @@ export const ENV = {
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
   openaiApiKey: process.env.OPENAI_API_KEY ?? "",
+  atlascloudApiKey: process.env.ATLASCLOUD_API_KEY ?? "",
 };
