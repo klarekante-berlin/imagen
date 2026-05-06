@@ -1,5 +1,27 @@
 {
   "version": "7",
   "dialect": "mysql",
-  "entries": []
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1778079870340,
+      "tag": "0000_known_venom",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1778080047699,
+      "tag": "0001_nasty_kang",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1778080068877,
+      "tag": "0002_organic_peter_quill",
+      "breakpoints": true
+    }
+  ]
 }
