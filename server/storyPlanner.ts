@@ -261,7 +261,13 @@ export async function planStory(input: PlanInput): Promise<StoryPlan> {
     {
       model: claudeModel,
       max_tokens: 4000,
-      system: PLAN_SYSTEM,
+      system: [
+        {
+          type: "text",
+          text: PLAN_SYSTEM,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
       tools: [PLAN_TOOL],
       tool_choice: { type: "tool", name: "plan_story" },
       messages: [{ role: "user", content: PLAN_USER_TEMPLATE(input.theme, characterList, assetList) }],
@@ -355,6 +361,11 @@ imagePrompt darf NIEMALS enthalten:
   ❌ Setting-Re-Beschreibung ("Berliner Küche am Morgen") — das prependiert der Server
   ❌ Doppelt erwähnte Charaktere die dieselbe Person sind
   ❌ Beleuchtungs-Beschreibung ("warmes goldenes Sonnenlicht") — kommt aus sceneToneNotes
+
+SELBSTPRÜFUNG vor tool_call:
+- Lese jeden imagePrompt nochmal: enthält er eine der ❌-Phrasen → korrigiere VOR Tool-Aufruf
+- Lese textContent: enthält er Anweisungen die in den imagePrompt gehören (Kameraperspektive, Pose) → verschiebe sie
+- Diese Selbstprüfung ist nicht optional
 
 GUT: "Toni sits at the kitchen table, jaw dropped, pointing aggressively at the viewer.
        Text overlay shows: 'Sonntagsfrühstück. Alles perfekt. Noch.'"
@@ -454,40 +465,30 @@ const WRITE_TOOL = {
   },
 };
 
-export async function writeStorySlides(input: WriteInput): Promise<{
-  consistencyContext: ConsistencyContext;
+const REFLECT_SYSTEM = `Du bist ein strenger Story-Editor. Du bekommst einen Slide-Entwurf und prüfst ihn nochmal.
+
+Prüfe in dieser Reihenfolge:
+1. Charakter-Konsistenz: gleiche Person, gleicher Name in allen Slides? (Vater ≠ Papa wenn beide auf dieselbe Person zeigen)
+2. Szenen-Konsistenz: jede Slide hat sceneId aus dem Plan, in der richtigen slideRange?
+3. imagePrompt-Sauberkeit: keine ❌-Phrasen (3D, Pixar, 1080x1080, Charakter-Aussehen, Setting-Re-Beschreibung, "warmes Licht")?
+4. textContent: max 2-3 Sätze, im Bild als Overlay verständlich?
+
+Wenn ALLES OK: gib EXAKT denselben Slide-Array zurück.
+Wenn EINE Sache nicht stimmt: korrigiere SIE und gib korrigierten Array zurück.
+Erfinde NICHTS neu — nur korrigieren.`;
+
+const REFLECT_USER = `Prüfe deinen vorigen Slide-Entwurf gegen die Regeln und rufe write_story_slides erneut auf — entweder identisch (alles OK) oder mit Korrekturen.`;
+
+/**
+ * Extract slides + consistencyContext from a write_story_slides tool_use response.
+ * Claude sometimes serializes the slides array as a JSON string inside tool_use
+ * input (especially for 8-10 slide stories) — jsonrepair fallback handles malformed
+ * unescaped quotes / German typography. Throws on unrecoverable shape errors.
+ */
+function parseWriteResponse(response: Anthropic.Message): {
+  consistencyContext: { colorPalette: string; sceneToneNotes: string };
   slides: SlideContent[];
-}> {
-  const client = getAnthropicClient();
-  const claudeModel = input.model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
-
-  // Per-slide tool-input is dense (textContent + caption + imagePrompt). Generous budget
-  // so 10-slide stories don't hit max_tokens — Anthropic returns truncated tool input
-  // (slides becomes a partial string) when max_tokens trips.
-  const response = await callClaudeWithRetry(
-    client,
-    {
-      model: claudeModel,
-      max_tokens: 16000,
-      system: WRITE_SYSTEM,
-      tools: [WRITE_TOOL],
-      tool_choice: { type: "tool", name: "write_story_slides" },
-      messages: [
-        {
-          role: "user",
-          content: WRITE_USER_TEMPLATE(input.theme, input.plan, input.resolvedCharacters, input.imageFormat),
-        },
-      ],
-    },
-    "writeStorySlides",
-  );
-
-  if (response.stop_reason === "max_tokens") {
-    throw new Error(
-      `writeStorySlides: Claude hit max_tokens (${response.usage.output_tokens} output) — slides truncated. Increase max_tokens or shorten prompt.`,
-    );
-  }
-
+} {
   const toolUse = response.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
   );
@@ -498,9 +499,16 @@ export async function writeStorySlides(input: WriteInput): Promise<{
     slides: SlideContent[] | string;
   };
 
-  // Claude sometimes serializes the slides array as a JSON string inside tool_use
-  // input (especially for 8-10 slide stories). The string itself may contain
-  // unescaped quotes / German typography. Use jsonrepair as fallback.
+  // Item 15 investigation (SDK 0.94.0): the slides-as-string fallback exists
+  // because Claude has historically returned the slides array as a JSON string
+  // for long outputs (8-10 slides). Could not be conclusively reproduced in
+  // isolation here without live API calls; symptom is sporadic and likely
+  // tied to (a) slides imagePrompt containing un-escaped quotes around
+  // German dialog and (b) high output_token pressure. Schema already types
+  // slides as `array`; further tightening of `imagePrompt` (e.g. description
+  // forbidding quotes) might help but risks degrading prose. Leaving fallback
+  // in place — cheap insurance, no observed downside. Re-investigate if the
+  // string branch never fires across N=50 generations in prod.
   let slides: SlideContent[];
   if (Array.isArray(parsed.slides)) {
     slides = parsed.slides;
@@ -524,6 +532,53 @@ export async function writeStorySlides(input: WriteInput): Promise<{
   } else {
     throw new Error(`writeStorySlides: slides is ${typeof parsed.slides}, expected array or JSON string`);
   }
+
+  return { consistencyContext: parsed.consistencyContext, slides };
+}
+
+export async function writeStorySlides(input: WriteInput): Promise<{
+  consistencyContext: ConsistencyContext;
+  slides: SlideContent[];
+}> {
+  const client = getAnthropicClient();
+  const claudeModel = input.model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
+
+  // Per-slide tool-input is dense (textContent + caption + imagePrompt). Generous budget
+  // so 10-slide stories don't hit max_tokens — Anthropic returns truncated tool input
+  // (slides becomes a partial string) when max_tokens trips.
+  const response = await callClaudeWithRetry(
+    client,
+    {
+      model: claudeModel,
+      max_tokens: 16000,
+      system: [
+        {
+          type: "text",
+          text: WRITE_SYSTEM,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      tools: [WRITE_TOOL],
+      tool_choice: { type: "tool", name: "write_story_slides" },
+      messages: [
+        {
+          role: "user",
+          content: WRITE_USER_TEMPLATE(input.theme, input.plan, input.resolvedCharacters, input.imageFormat),
+        },
+      ],
+    },
+    "writeStorySlides",
+  );
+
+  if (response.stop_reason === "max_tokens") {
+    throw new Error(
+      `writeStorySlides: Claude hit max_tokens (${response.usage.output_tokens} output) — slides truncated. Increase max_tokens or shorten prompt.`,
+    );
+  }
+
+  const parsed = parseWriteResponse(response);
+  let slides: SlideContent[] = parsed.slides;
+
   if (slides.length !== input.plan.suggestedSlideCount) {
     throw new Error(
       `writeStorySlides: got ${slides.length} slides, expected ${input.plan.suggestedSlideCount}`,
@@ -536,6 +591,44 @@ export async function writeStorySlides(input: WriteInput): Promise<{
     if (s.sceneId && !sceneIds.has(s.sceneId)) {
       throw new Error(`slide ${s.slideNumber}: unknown sceneId ${s.sceneId}`);
     }
+  }
+
+  // Reflection pass: have Claude self-critique and re-emit the slides if needed.
+  // Single 1-pass — no iterative loop. ~10s extra latency, sharper output.
+  // If parse/validation fails, fall back to first response's slides.
+  try {
+    const reflection = await callClaudeWithRetry(
+      client,
+      {
+        model: claudeModel,
+        max_tokens: 16000,
+        system: [
+          { type: "text", text: REFLECT_SYSTEM, cache_control: { type: "ephemeral" } },
+        ],
+        tools: [WRITE_TOOL],
+        tool_choice: { type: "tool", name: "write_story_slides" },
+        messages: [
+          {
+            role: "user",
+            content: WRITE_USER_TEMPLATE(input.theme, input.plan, input.resolvedCharacters, input.imageFormat),
+          },
+          { role: "assistant", content: response.content },
+          { role: "user", content: REFLECT_USER },
+        ],
+      },
+      "writeStorySlides.reflect",
+    );
+    if (reflection.stop_reason !== "max_tokens") {
+      const reflected = parseWriteResponse(reflection);
+      if (
+        reflected.slides.length === input.plan.suggestedSlideCount &&
+        reflected.slides.every((s) => !s.sceneId || sceneIds.has(s.sceneId))
+      ) {
+        slides = reflected.slides;
+      }
+    }
+  } catch (e) {
+    console.log(`[writeStorySlides] reflection failed, using first-pass slides: ${(e as Error).message}`);
   }
 
   // Assemble v2 ConsistencyContext. The PROJECT_STYLE_ANCHOR is *not* baked

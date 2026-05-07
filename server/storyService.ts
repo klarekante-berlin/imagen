@@ -328,26 +328,6 @@ export async function generateSlideImage(
   const nextScene = consistencyContext.scenes[sceneIdx + 1];
   const isLastOfScene = slideNumber === scene.slideRange[1];
 
-  // Defensive: strip Claude-injected style/format clauses from slidePrompt.
-  // These should be set by the project anchor + scene block, not Claude.
-  // Split by sentence-ish boundaries, drop sentences containing a forbidden
-  // phrase, rejoin. Conservative: only drops the offending sentence.
-  const FORBIDDEN_PROMPT_PHRASES = [
-    /\b(3d|cartoon)\s+(render|cartoon)/gi,
-    /\bpixar[-\s]?style\b/gi,
-    /\b1080\s*x\s*1080(?:px)?\b/gi,
-    /\b1080\s*x\s*1350(?:px)?\b/gi,
-    /\bsquare\s+format\b/gi,
-    /\baspect\s+ratio\b/gi,
-    /\bquadratisches\s+format\b/gi,
-    /\bhochformat\b/gi,
-  ];
-  const cleanedSlidePrompt = slidePrompt
-    .split(/(?<=[.!?])\s+/)
-    .filter((s) => !FORBIDDEN_PROMPT_PHRASES.some((rx) => rx.test(s)))
-    .join(" ")
-    .trim();
-
   // Build per-slide character block. When the character has a reference image
   // attached (via characterReferenceUrls), the model already sees the full
   // appearance — extra text just adds noise. When NO ref is available, we
@@ -404,7 +384,7 @@ export async function generateSlideImage(
     isLastOfScene && nextScene && scene.transitionToNext
       ? `Transition cue: ${scene.transitionToNext} (next scene: ${nextScene.environment}).`
       : null,
-    cleanedSlidePrompt,
+    slidePrompt,
     styleRefHint,
   ]
     .filter(Boolean)
