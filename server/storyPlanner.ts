@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { jsonrepair } from "jsonrepair";
 import type { Asset, AiModel, ImageFormat, Character } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import {
@@ -342,7 +343,7 @@ const WRITE_SYSTEM = `Du bist Story-Texter für Instagram-Carousels im Stil von 
 
 DEIN STIL:
 - Berliner Direktheit, satirisch trocken (Ricky Gervais mit Herz)
-- Zahlen als Schockmomente ("41 FUCKING PROZENT!")
+- Zahlen als Schockmomente (z.B. 41 FUCKING PROZENT)
 - Persönliche Anekdoten als emotionale Auflösung
 - textContent ist Text der DIREKT IM BILD erscheint, max 2-3 kurze Sätze
 
@@ -356,7 +357,14 @@ TEXT-OVERLAY:
 - textContent muss auch ohne Bild verständlich sein
 - imagePrompt MUSS textContent als großen Text-Overlay im Bild enthalten
 
-Antworte IMMER als valides JSON, kein Markdown.`;
+WICHTIG ZU STRINGS:
+- Verwende NIEMALS doppelte Anführungszeichen " innerhalb von String-Werten — das bricht die JSON-Struktur
+- Für Zitate/Dialoge: nutze einfache Anführungszeichen ' oder Gedankenstriche —
+- Beispiel falsch: textContent: "Er sagte "Hallo"" ← BRICHT JSON
+- Beispiel richtig: textContent: "Er sagte 'Hallo'" oder "Er sagte: Hallo"
+- Newlines im textContent: \\n ist OK
+
+Antworte über das tool_use API.`;
 
 const WRITE_USER_TEMPLATE = (
   theme: string,
@@ -436,11 +444,14 @@ export async function writeStorySlides(input: WriteInput): Promise<{
   const client = getAnthropicClient();
   const claudeModel = input.model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
 
+  // Per-slide tool-input is dense (textContent + caption + imagePrompt). Generous budget
+  // so 10-slide stories don't hit max_tokens — Anthropic returns truncated tool input
+  // (slides becomes a partial string) when max_tokens trips.
   const response = await callClaudeWithRetry(
     client,
     {
       model: claudeModel,
-      max_tokens: 8000,
+      max_tokens: 16000,
       system: WRITE_SYSTEM,
       tools: [WRITE_TOOL],
       tool_choice: { type: "tool", name: "write_story_slides" },
@@ -454,6 +465,12 @@ export async function writeStorySlides(input: WriteInput): Promise<{
     "writeStorySlides",
   );
 
+  if (response.stop_reason === "max_tokens") {
+    throw new Error(
+      `writeStorySlides: Claude hit max_tokens (${response.usage.output_tokens} output) — slides truncated. Increase max_tokens or shorten prompt.`,
+    );
+  }
+
   const toolUse = response.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
   );
@@ -461,18 +478,44 @@ export async function writeStorySlides(input: WriteInput): Promise<{
 
   const parsed = toolUse.input as {
     consistencyContext: { artStyle: string; colorPalette: string; globalStylePrompt: string };
-    slides: SlideContent[];
+    slides: SlideContent[] | string;
   };
 
-  if (!Array.isArray(parsed.slides) || parsed.slides.length !== input.plan.suggestedSlideCount) {
+  // Claude sometimes serializes the slides array as a JSON string inside tool_use
+  // input (especially for 8-10 slide stories). The string itself may contain
+  // unescaped quotes / German typography. Use jsonrepair as fallback.
+  let slides: SlideContent[];
+  if (Array.isArray(parsed.slides)) {
+    slides = parsed.slides;
+  } else if (typeof parsed.slides === "string") {
+    let parsedString: unknown;
+    try {
+      parsedString = JSON.parse(parsed.slides);
+    } catch {
+      try {
+        parsedString = JSON.parse(jsonrepair(parsed.slides));
+      } catch (e) {
+        throw new Error(
+          `writeStorySlides: slides string could not be parsed even after repair: ${(e as Error).message}`,
+        );
+      }
+    }
+    if (!Array.isArray(parsedString)) {
+      throw new Error(`writeStorySlides: parsed slides string but not array: ${typeof parsedString}`);
+    }
+    slides = parsedString as SlideContent[];
+  } else {
+    throw new Error(`writeStorySlides: slides is ${typeof parsed.slides}, expected array or JSON string`);
+  }
+  if (slides.length !== input.plan.suggestedSlideCount) {
     throw new Error(
-      `writeStorySlides: got ${parsed.slides?.length ?? 0} slides, expected ${input.plan.suggestedSlideCount}`,
+      `writeStorySlides: got ${slides.length} slides, expected ${input.plan.suggestedSlideCount}`,
     );
   }
 
   // Each slide must reference a real scene
   const sceneIds = new Set(input.plan.scenes.map((s) => s.id));
-  for (const s of parsed.slides) {
+  for (const s of slides) {
     if (s.sceneId && !sceneIds.has(s.sceneId)) {
       throw new Error(`slide ${s.slideNumber}: unknown sceneId ${s.sceneId}`);
     }
@@ -497,5 +540,5 @@ export async function writeStorySlides(input: WriteInput): Promise<{
   const normalized = normalizeConsistencyContext(consistencyContext);
   if (!normalized) throw new Error("Failed to normalize newly-built consistency context");
 
-  return { consistencyContext: normalized, slides: parsed.slides };
+  return { consistencyContext: normalized, slides };
 }
