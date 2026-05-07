@@ -441,12 +441,12 @@ const storyRouter = router({
         });
       }
 
-      // Style references
+      // Style references — persist relative paths only (avoids data: URIs
+      // bloating consistencyContext past max_allowed_packet). generateAllImages
+      // re-resolves to data URIs / presigned URLs at render time.
       const allAssets = await getAssets();
-      const styleAssets = allAssets.filter((a) => a.category === "stil-referenz").slice(0, 2);
-      const styleReferenceUrls = (
-        await Promise.all(styleAssets.map((a) => getPresignedStorageUrl(a.imageUrl)))
-      ).filter((u): u is string => !!u);
+      const styleAssets = allAssets.filter((a) => a.category === "stil-referenz");
+      const styleReferenceUrls = styleAssets.map((a) => a.imageUrl).filter((u): u is string => !!u);
       for (const a of styleAssets) usedAssetIds.push(a.id);
 
       const { consistencyContext, slides } = await writeStorySlides({
