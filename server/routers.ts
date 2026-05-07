@@ -316,16 +316,16 @@ const storyRouter = router({
           slideRange: z.tuple([z.number().int(), z.number().int()]),
           environment: z.string(),
           environmentLockNotes: z.string(),
-          transitionToNext: z.string().optional(),
-          environmentRefAssetId: z.number().optional(),
+          transitionToNext: z.string().nullish(),
+          environmentRefAssetId: z.number().nullish(),
         })),
         detectedEntities: z.array(z.object({
           name: z.string(),
           type: z.enum(["character", "object", "place"]),
-          matchedCharacterId: z.number().optional(),
+          matchedCharacterId: z.number().nullish(),
           matchedAssetIds: z.array(z.number()).default([]),
           needsWorldBuilding: z.boolean(),
-          draftVisualDescription: z.string().optional().nullable(),
+          draftVisualDescription: z.string().nullish(),
         })),
       }),
       selectedAssetIdsByEntity: z.record(z.string(), z.number().nullable()).optional(),
@@ -334,7 +334,28 @@ const storyRouter = router({
       imageProvider: z.enum(["gpt-image-2", "freepik"]).default("gpt-image-2"),
     }))
     .mutation(async ({ input }) => {
-      const plan = input.plan as StoryPlan;
+      // Coerce zod-allowed null → undefined for downstream Scene/DetectedEntity shapes.
+      const plan: StoryPlan = {
+        title: input.plan.title,
+        suggestedSlideCount: input.plan.suggestedSlideCount,
+        reasoning: input.plan.reasoning,
+        scenes: input.plan.scenes.map((s) => ({
+          id: s.id,
+          slideRange: s.slideRange,
+          environment: s.environment,
+          environmentLockNotes: s.environmentLockNotes,
+          transitionToNext: s.transitionToNext ?? undefined,
+          environmentRefAssetId: s.environmentRefAssetId ?? undefined,
+        })),
+        detectedEntities: input.plan.detectedEntities.map((e) => ({
+          name: e.name,
+          type: e.type,
+          matchedCharacterId: e.matchedCharacterId ?? undefined,
+          matchedAssetIds: e.matchedAssetIds,
+          needsWorldBuilding: e.needsWorldBuilding,
+          draftVisualDescription: e.draftVisualDescription ?? undefined,
+        })),
+      };
 
       // Resolve characters: user override → matched character → skip
       const resolvedCharacters: ConsistencyCharacterRef[] = [];
