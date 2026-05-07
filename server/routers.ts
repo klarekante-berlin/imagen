@@ -699,15 +699,17 @@ const generateRouter = router({
         }
       }
       const slideCharacters = (slide.charactersInSlide as string[] || []);
+      // Match generateAllImages: up to 3 char refs, smart-fill rest with styles in
+      // generateSlideImage. Atlas hard-cap is 4 total.
       const charRefUrls = slideCharacters
         .map((name) => characterAssetMap.get(name.toLowerCase()))
         .filter((url): url is string => !!url)
-        .slice(0, 2);
+        .slice(0, 3);
 
-      // Style reference: use assets from 'stil-referenz' category
+      // All stil-referenz assets — generateSlideImage decides how many to actually pass
       const styleRefAssets = usedAssets.filter((a) => a.category === "stil-referenz");
       const styleReferenceUrls = (
-        await Promise.all(styleRefAssets.slice(0, 1).map((a) => getPresignedStorageUrl(a.imageUrl ?? "")))
+        await Promise.all(styleRefAssets.map((a) => getPresignedStorageUrl(a.imageUrl ?? "")))
       ).filter((u): u is string => !!u);
       await updateSlide(input.slideId, { status: "generating" });
 

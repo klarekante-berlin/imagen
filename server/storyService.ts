@@ -634,9 +634,8 @@ export async function generateSlideImage(
     ? "Some of the reference images are typography / brand-style sheets — match the in-image text overlay's font weight, color treatment and color highlights to those references."
     : null;
 
-  // Build the full prompt. PROJECT_STYLE_ANCHOR goes first AND last so the
-  // rendering style is sticky even when Atlas truncates or summarizes
-  // mid-prompt. globalStylePrompt no longer contains the anchor (handled here).
+  // Build the full prompt. PROJECT_STYLE_ANCHOR is prepended once (gpt-image-2
+  // is LLM-like — start placement is enough, repeating it just bloats tokens).
   const fullPrompt = [
     PROJECT_STYLE_ANCHOR,
     consistencyContext.globalStylePrompt,
@@ -647,10 +646,8 @@ export async function generateSlideImage(
       ? `Transition cue: ${scene.transitionToNext} (next scene: ${nextScene.environment}).`
       : null,
     cleanedSlidePrompt,
-    `Slide ${slideNumber} of ${totalSlides}.`,
-    "Text must be large, bold, clearly readable, positioned in the lower or upper third of the image.",
+    "Text overlay: large, bold, clearly readable.",
     styleRefHint,
-    `Final reminder: ${PROJECT_STYLE_ANCHOR}`,
   ]
     .filter(Boolean)
     .join(" ");
