@@ -167,10 +167,16 @@ async function importOne(
   knownCharacters: KnownCharacter[],
   args: CliArgs
 ): Promise<FileResult> {
-  const folderName = path.basename(path.dirname(absPath));
+  const parentDir = path.basename(path.dirname(absPath));
   const fileName = path.basename(absPath);
-  const sourcePath = `klarekante-style/${folderName}/${fileName}`;
-  const hint = FOLDER_HINTS[folderName] ?? {};
+  // Top-level files (parentDir === "klarekante-style") have no folder hint;
+  // the sourcePath is relative to the corpus root with no extra prefix.
+  const isTopLevel = parentDir === "klarekante-style";
+  const folderName = isTopLevel ? "" : parentDir;
+  const sourcePath = isTopLevel
+    ? `klarekante-style/${fileName}`
+    : `klarekante-style/${folderName}/${fileName}`;
+  const hint = isTopLevel ? {} : FOLDER_HINTS[folderName] ?? {};
 
   try {
     const buffer = fs.readFileSync(absPath);
@@ -320,12 +326,15 @@ async function main() {
     files.push(...entries);
   }
 
-  // Top-level files in ROOT (e.g. magnific_3d-a-family-of-five-inclu_*.png)
-  const topLevel = fs
-    .readdirSync(ROOT)
-    .filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f) && fs.statSync(path.join(ROOT, f)).isFile())
-    .map((f) => path.join(ROOT, f));
-  files.push(...topLevel);
+  // Top-level files in ROOT — only when no --folder filter is active. With a
+  // folder filter the user wants only that folder's contents.
+  if (!args.folder) {
+    const topLevel = fs
+      .readdirSync(ROOT)
+      .filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f) && fs.statSync(path.join(ROOT, f)).isFile())
+      .map((f) => path.join(ROOT, f));
+    files.push(...topLevel);
+  }
 
   if (args.limit) files.splice(args.limit);
 
