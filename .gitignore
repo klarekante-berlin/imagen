@@ -122,6 +122,11 @@ graphify-out/
 klarekante-style/
 import-errors.log
 
+# user-pasted slide screenshots / repro images at repo root
+slide-*.png
+slide-*.jpg
+slide-*.jpeg
+
 # local-dev stack (filesystem storage backend + dockerized mysql data)
 storage-data/
 docker-data/
