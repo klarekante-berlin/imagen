@@ -54,6 +54,53 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 const CATEGORIES = Object.keys(CATEGORY_LABELS);
 
+// Mirrors scripts/import-klarekante-style.ts FOLDER_HINTS — strong priors
+// for vision categorization when the user is uploading a known persona batch.
+type AssetCategoryKey =
+  | "familie" | "historisch" | "sport" | "musik" | "politiker" | "tech-ceo"
+  | "tiere" | "umgebungen" | "fahrzeuge" | "items" | "stil-referenz" | "sonstiges";
+
+type FolderHint = {
+  characterName?: string;
+  characterKind?: "family" | "public_figure" | "fictional" | "world-built";
+  characterAliases?: string[];
+  fallbackCategory?: AssetCategoryKey;
+};
+
+const UPLOAD_HINTS: Record<string, FolderHint & { label: string }> = {
+  none: { label: "🪄 Auto (Vision entscheidet)" },
+  papa: { label: "👨 Papa (Familie)", characterName: "Papa", characterKind: "family", characterAliases: ["Vater", "Dad", "mein Vater"], fallbackCategory: "familie" },
+  mama: { label: "👩 Mama (Familie)", characterName: "Mama", characterKind: "family", characterAliases: ["Mutter", "Mom"], fallbackCategory: "familie" },
+  sohn: { label: "👦 Sohn (Familie)", characterName: "Sohn", characterKind: "family", characterAliases: ["Junge", "mein Sohn"], fallbackCategory: "familie" },
+  tochter: { label: "👧 Tochter (Familie)", characterName: "Tochter", characterKind: "family", characterAliases: ["Mädchen", "meine Tochter"], fallbackCategory: "familie" },
+  hund: { label: "🐶 Hund / Mops", characterName: "Mops", characterKind: "fictional", characterAliases: ["Hund", "Pug"], fallbackCategory: "tiere" },
+  katze: { label: "🐱 Katze", characterName: "Katze", characterKind: "fictional", characterAliases: ["Cat"], fallbackCategory: "tiere" },
+  athletes: { label: "🏃 Athleten", fallbackCategory: "sport" },
+  musicians: { label: "🎤 Musiker", fallbackCategory: "musik" },
+  politiker: { label: "🏛️ Politiker", fallbackCategory: "politiker" },
+  tech_people: { label: "💻 Tech-CEOs", fallbackCategory: "tech-ceo" },
+  historic_persons: { label: "📜 Historische Personen", fallbackCategory: "historisch" },
+  umgebungen: { label: "🏞️ Umgebungen", fallbackCategory: "umgebungen" },
+  vehicles: { label: "🚗 Fahrzeuge", fallbackCategory: "fahrzeuge" },
+  items: { label: "📦 Items", fallbackCategory: "items" },
+  social_media_posts: { label: "📱 Social-Media-Stil-Refs", fallbackCategory: "stil-referenz" },
+};
+
+interface QueueItem {
+  id: string;
+  file: File;
+  preview: string;
+  status: "pending" | "processing" | "done" | "error" | "skipped";
+  result?: {
+    assetId: number;
+    deduplicated: boolean;
+    suggestedCategory?: string;
+    confidence?: number | null;
+    matchedCharacter?: string | null;
+  };
+  errorMessage?: string;
+}
+
 export default function Library() {
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [selectedCharacterId, setSelectedCharacterId] = useState<number | null>(null);
@@ -64,13 +111,10 @@ export default function Library() {
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
   const [editAsset, setEditAsset] = useState<Asset | null>(null);
 
-  // Upload state
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [uploadPreview, setUploadPreview] = useState<string | null>(null);
-  const [uploadName, setUploadName] = useState("");
-  const [uploadCategory, setUploadCategory] = useState<string>("auto");
-  const [uploadDescription, setUploadDescription] = useState("");
-  const [uploadVisualDesc, setUploadVisualDesc] = useState("");
+  // Multi-file upload state
+  const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
+  const [uploadHint, setUploadHint] = useState<string>("none");
+  const [isUploading, setIsUploading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -87,15 +131,7 @@ export default function Library() {
   });
   const { data: charactersList = [] } = trpc.characters.list.useQuery();
 
-  const uploadMutation = trpc.assets.upload.useMutation({
-    onSuccess: () => {
-      toast.success("Asset erfolgreich hochgeladen!");
-      utils.assets.list.invalidate();
-      setUploadOpen(false);
-      resetUpload();
-    },
-    onError: (err) => toast.error(`Upload fehlgeschlagen: ${err.message}`),
-  });
+  const uploadMutation = trpc.assets.upload.useMutation();
 
   const deleteMutation = trpc.assets.delete.useMutation({
     onSuccess: () => {
@@ -143,49 +179,133 @@ export default function Library() {
   const pendingReviewCount = assets.filter((a) => a.reviewStatus === "needs_review").length;
 
   const resetUpload = () => {
-    setUploadFile(null);
-    setUploadPreview(null);
-    setUploadName("");
-    setUploadCategory("auto");
-    setUploadDescription("");
-    setUploadVisualDesc("");
+    setUploadQueue([]);
+    setUploadHint("none");
+    setIsUploading(false);
   };
 
-  const handleFileSelect = (file: File) => {
-    setUploadFile(file);
-    const reader = new FileReader();
-    reader.onload = (e) => setUploadPreview(e.target?.result as string);
-    reader.readAsDataURL(file);
-    if (!uploadName) setUploadName(file.name.replace(/\.[^/.]+$/, ""));
+  const addFilesToQueue = (files: File[]) => {
+    const items: QueueItem[] = [];
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) continue;
+      items.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        file,
+        preview: "",
+        status: "pending",
+      });
+    }
+    // Read previews
+    items.forEach((item) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const preview = e.target?.result as string;
+        setUploadQueue((prev) =>
+          prev.map((q) => (q.id === item.id ? { ...q, preview } : q)),
+        );
+      };
+      reader.readAsDataURL(item.file);
+    });
+    setUploadQueue((prev) => [...prev, ...items]);
   };
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file && file.type.startsWith("image/")) handleFileSelect(file);
+    addFilesToQueue(Array.from(e.dataTransfer.files));
   }, []);
 
-  const handleUploadSubmit = async () => {
-    if (!uploadFile || !uploadName) {
-      toast.error("Bitte Name und Bild ausfüllen");
-      return;
+  const removeFromQueue = (id: string) =>
+    setUploadQueue((prev) => prev.filter((q) => q.id !== id));
+
+  const fileToBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve((reader.result as string).split(",")[1]);
+      reader.onerror = () => reject(new Error("FileReader failed"));
+      reader.readAsDataURL(file);
+    });
+
+  const processQueue = async () => {
+    if (isUploading) return;
+    const pending = uploadQueue.filter((q) => q.status === "pending");
+    if (pending.length === 0) return;
+    setIsUploading(true);
+    const hint = uploadHint !== "none" ? UPLOAD_HINTS[uploadHint] : null;
+
+    // Sequential — vision rate limits + clearer per-file feedback
+    for (const item of pending) {
+      setUploadQueue((prev) =>
+        prev.map((q) => (q.id === item.id ? { ...q, status: "processing" } : q)),
+      );
+      try {
+        const base64 = await fileToBase64(item.file);
+        const result = await uploadMutation.mutateAsync({
+          name: item.file.name.replace(/\.[^/.]+$/, ""),
+          autoCategorize: true,
+          imageData: base64,
+          mimeType: item.file.type,
+          fileName: item.file.name,
+          hint:
+            hint && (hint.fallbackCategory || hint.characterName)
+              ? {
+                  folderName: uploadHint,
+                  characterName: hint.characterName,
+                  characterKind: hint.characterKind,
+                  characterAliases: hint.characterAliases,
+                  fallbackCategory: hint.fallbackCategory,
+                }
+              : undefined,
+        });
+        const matchedCharacter =
+          result.vision?.suggestedCharacter.matchType === "existing"
+            ? charactersList.find(
+                (c) =>
+                  c.id ===
+                  (result.vision!.suggestedCharacter as { characterId: number }).characterId,
+              )?.name ?? null
+            : result.vision?.suggestedCharacter.matchType === "new"
+              ? (result.vision!.suggestedCharacter as { name: string }).name
+              : null;
+
+        setUploadQueue((prev) =>
+          prev.map((q) =>
+            q.id === item.id
+              ? {
+                  ...q,
+                  status: result.deduplicated ? "skipped" : "done",
+                  result: {
+                    assetId: result.id,
+                    deduplicated: result.deduplicated,
+                    suggestedCategory: result.vision?.suggestedCategory,
+                    confidence: result.vision?.categoryConfidence ?? null,
+                    matchedCharacter,
+                  },
+                }
+              : q,
+          ),
+        );
+      } catch (err) {
+        setUploadQueue((prev) =>
+          prev.map((q) =>
+            q.id === item.id
+              ? {
+                  ...q,
+                  status: "error",
+                  errorMessage: err instanceof Error ? err.message : "Unknown",
+                }
+              : q,
+          ),
+        );
+      }
     }
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const base64 = (e.target?.result as string).split(",")[1];
-      uploadMutation.mutate({
-        name: uploadName,
-        category: uploadCategory === "auto" ? undefined : (uploadCategory as Asset["category"]),
-        autoCategorize: uploadCategory === "auto",
-        description: uploadDescription || undefined,
-        visualDescription: uploadVisualDesc || undefined,
-        imageData: base64,
-        mimeType: uploadFile.type,
-        fileName: uploadFile.name,
-      });
-    };
-    reader.readAsDataURL(uploadFile);
+
+    setIsUploading(false);
+    utils.assets.list.invalidate();
+    utils.characters.list.invalidate();
+    const successCount = uploadQueue.filter((q) => q.status === "done").length;
+    toast.success(`${pending.length} Datei(en) verarbeitet`);
+    void successCount;
   };
 
   const filteredAssets = assets.filter((a) =>
@@ -359,14 +479,37 @@ export default function Library() {
         )}
       </div>
 
-      {/* Upload Dialog */}
+      {/* Upload Dialog — multi-file with vision preview */}
       <Dialog open={uploadOpen} onOpenChange={(o) => { setUploadOpen(o); if (!o) resetUpload(); }}>
-        <DialogContent className="max-w-lg bg-card border-border">
+        <DialogContent className="max-w-2xl bg-card border-border max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="font-display">Asset hochladen</DialogTitle>
-            <DialogDescription>Character Sheet, Umgebung oder Item zur Library hinzufügen</DialogDescription>
+            <DialogTitle className="font-display">Assets hochladen</DialogTitle>
+            <DialogDescription>
+              Mehrere Dateien gleichzeitig — Vision kategorisiert automatisch und matched
+              an deine Charaktere. Optional kannst du oben einen Folder-Hint setzen für
+              gebatchte Personen-Uploads.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            {/* Hint preset */}
+            <div className="space-y-1.5">
+              <Label>Folder-Hint (optional, gilt für alle Files in diesem Batch)</Label>
+              <Select value={uploadHint} onValueChange={setUploadHint}>
+                <SelectTrigger className="bg-background border-border">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(UPLOAD_HINTS).map(([key, h]) => (
+                    <SelectItem key={key} value={key}>{h.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Beispiel: alle "Sohn" Variations → wähle "Sohn (Familie)" → Vision matched
+                gegen den Sohn-Character. Ohne Hint: pure Vision-Auto-Detect.
+              </p>
+            </div>
+
             {/* Drop zone */}
             <div
               onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
@@ -381,92 +524,109 @@ export default function Library() {
                 ref={fileInputRef}
                 type="file"
                 accept="image/*"
+                multiple
                 className="hidden"
-                onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); }}
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? []);
+                  if (files.length > 0) addFilesToQueue(files);
+                  e.target.value = ""; // allow re-selecting same files
+                }}
               />
-              {uploadPreview ? (
-                <div className="relative">
-                  <img src={uploadPreview} alt="Preview" className="max-h-40 mx-auto rounded-lg object-contain" />
-                  <button
-                    className="absolute top-0 right-0 bg-destructive text-white rounded-full p-0.5"
-                    onClick={(e) => { e.stopPropagation(); setUploadFile(null); setUploadPreview(null); }}
+              <UploadIcon className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+              <p className="text-sm text-muted-foreground">
+                Bilder hierher ziehen oder <span className="text-primary">klicken</span> (mehrere möglich)
+              </p>
+              <p className="text-xs text-muted-foreground/60 mt-1">PNG, JPG, WEBP. Sequentielle Verarbeitung.</p>
+            </div>
+
+            {/* Queue */}
+            {uploadQueue.length > 0 && (
+              <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                {uploadQueue.map((q) => (
+                  <div
+                    key={q.id}
+                    className="flex items-center gap-3 p-2 rounded-lg border border-border/40 bg-background/30"
                   >
-                    <XIcon className="w-3 h-3" />
-                  </button>
-                </div>
-              ) : (
-                <>
-                  <UploadIcon className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
-                  <p className="text-sm text-muted-foreground">Bild hierher ziehen oder <span className="text-primary">klicken</span></p>
-                  <p className="text-xs text-muted-foreground/60 mt-1">PNG, JPG, WEBP bis 10MB</p>
-                </>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="asset-name">Name *</Label>
-                <Input
-                  id="asset-name"
-                  placeholder="z.B. Dad Character Sheet"
-                  value={uploadName}
-                  onChange={(e) => setUploadName(e.target.value)}
-                  className="bg-background border-border"
-                />
+                    <div className="w-12 h-12 rounded-md overflow-hidden bg-muted/30 shrink-0">
+                      {q.preview ? (
+                        <img src={q.preview} alt={q.file.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <ImageIcon className="w-4 h-4 text-muted-foreground/30" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium truncate">{q.file.name}</p>
+                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                        {q.status === "pending" && (
+                          <Badge variant="outline" className="text-[10px]">queued</Badge>
+                        )}
+                        {q.status === "processing" && (
+                          <Badge className="text-[10px] gap-1 bg-primary/20 text-primary border-primary/30">
+                            <span className="animate-spin">⟳</span> Vision…
+                          </Badge>
+                        )}
+                        {q.status === "done" && q.result && (
+                          <>
+                            <Badge variant="secondary" className="text-[10px]">
+                              {q.result.suggestedCategory ?? "?"}
+                              {q.result.confidence != null ? ` ${q.result.confidence}%` : ""}
+                            </Badge>
+                            {q.result.matchedCharacter && (
+                              <Badge className="text-[10px] bg-emerald-500/15 text-emerald-400 border-emerald-500/30">
+                                {q.result.matchedCharacter}
+                              </Badge>
+                            )}
+                          </>
+                        )}
+                        {q.status === "skipped" && (
+                          <Badge variant="outline" className="text-[10px]">Duplikat (übersprungen)</Badge>
+                        )}
+                        {q.status === "error" && (
+                          <Badge variant="destructive" className="text-[10px]">
+                            Error: {q.errorMessage?.slice(0, 30)}
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                    {q.status === "pending" && (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7"
+                        onClick={() => removeFromQueue(q.id)}
+                        title="Aus Queue entfernen"
+                      >
+                        <XIcon className="w-3.5 h-3.5" />
+                      </Button>
+                    )}
+                  </div>
+                ))}
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="asset-category">Kategorie</Label>
-                <Select value={uploadCategory} onValueChange={setUploadCategory}>
-                  <SelectTrigger className="bg-background border-border">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="auto">🪄 Auto (KI erkennt)</SelectItem>
-                    {CATEGORIES.filter((c) => c !== "all").map((cat) => (
-                      <SelectItem key={cat} value={cat}>{CATEGORY_LABELS[cat]}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="asset-desc">Beschreibung</Label>
-              <Input
-                id="asset-desc"
-                placeholder="Kurze Beschreibung des Assets"
-                value={uploadDescription}
-                onChange={(e) => setUploadDescription(e.target.value)}
-                className="bg-background border-border"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="asset-visual">Visuelle Beschreibung (für KI-Prompts)</Label>
-              <Textarea
-                id="asset-visual"
-                placeholder="z.B. 'Tall man in his 40s, brown hair, wearing blue jeans and white t-shirt, friendly expression'"
-                value={uploadVisualDesc}
-                onChange={(e) => setUploadVisualDesc(e.target.value)}
-                className="bg-background border-border resize-none"
-                rows={3}
-              />
-              <p className="text-xs text-muted-foreground">Diese Beschreibung wird in die Bildprompts eingefügt für maximale Konsistenz.</p>
-            </div>
+            )}
 
             <div className="flex gap-3 pt-2">
-              <Button variant="outline" className="flex-1" onClick={() => { setUploadOpen(false); resetUpload(); }}>
-                Abbrechen
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => { setUploadOpen(false); resetUpload(); }}
+                disabled={isUploading}
+              >
+                Schließen
               </Button>
               <Button
                 className="flex-1 gap-2"
-                onClick={handleUploadSubmit}
-                disabled={!uploadFile || !uploadName || uploadMutation.isPending}
+                onClick={processQueue}
+                disabled={
+                  isUploading ||
+                  uploadQueue.filter((q) => q.status === "pending").length === 0
+                }
               >
-                {uploadMutation.isPending ? (
-                  <><span className="animate-spin">⟳</span> Hochladen...</>
+                {isUploading ? (
+                  <><span className="animate-spin">⟳</span> Verarbeite…</>
                 ) : (
-                  <><UploadIcon className="w-4 h-4" /> Hochladen</>
+                  <><UploadIcon className="w-4 h-4" /> {uploadQueue.filter((q) => q.status === "pending").length} hochladen</>
                 )}
               </Button>
             </div>

@@ -5,6 +5,7 @@ import { ENV } from "./_core/env";
 import {
   ConsistencyContext,
   ConsistencyCharacterRef,
+  PROJECT_STYLE_ANCHOR,
   Scene,
   SlideContent,
   normalizeConsistencyContext,
@@ -351,7 +352,17 @@ KONSISTENZ:
 - Du bekommst einen Plan mit FEST DEFINIERTEN scenes und Charakteren — verwende sie
 - Pro Slide gibt es eine sceneId — der image-Generator nutzt das Setting aus dem Plan
 - Outfits/Visuals der Charaktere bleiben in allen Slides identisch (siehe character-Liste)
-- Der Bildstil ist 3D-Cartoon-Render im Pixar/Mitchell-Stil
+
+VISUELLER RENDER-STIL (PROJEKT-WEIT FEST — nicht überschreiben):
+- 3D-Cartoon im Mitchell's vs the Machines / Pixar Stil
+- Wird vom Server automatisch in jeden imagePrompt eingefügt
+- Du gibst nur colorPalette (Farbstimmung) + sceneToneNotes (Beleuchtung/Mood) zurück
+- imagePrompt soll die SZENE beschreiben, nicht den Render-Stil neu definieren
+
+CHARAKTERE IM imagePrompt:
+- Wenn Charakter eine referenceImageUrl hat: nur Name + Aktion erwähnen ("Toni leans back, looking annoyed")
+- Wenn KEINE Referenz: volle Beschreibung (Outfit, Aussehen, Alter)
+- Doppelt zu beschreiben wenn Ref vorhanden = nur Noise
 
 TEXT-OVERLAY:
 - textContent muss auch ohne Bild verständlich sein
@@ -389,7 +400,10 @@ ${plan.scenes
 
 CHARAKTERE (FEST):
 ${characters
-  .map((c) => `- "${c.name}" (assetId:${c.assetId}) outfit: ${c.outfit} | ${c.visualDescription}`)
+  .map((c) => {
+    const refTag = c.referenceImageUrl ? "✓ HAT REFERENCE-IMAGE" : "✗ keine Reference";
+    return `- "${c.name}" (assetId:${c.assetId}) [${refTag}] outfit: ${c.outfit || "—"} | ${c.visualDescription || "—"}`;
+  })
   .join("\n") || "(keine — Charaktere im imagePrompt selbst beschreiben)"}
 
 Bildformat: ${imageFormat === "1:1" ? "quadratisch 1080x1080px" : "Hochformat 1080x1350px"}
@@ -399,23 +413,23 @@ Erstelle EXAKT ${plan.suggestedSlideCount} Slides und rufe das Tool write_story_
 REGELN:
 - EXAKT ${plan.suggestedSlideCount} Slides
 - Jeder Slide hat sceneId aus dem Plan (anhand slideRange zuordnen)
-- imagePrompt MUSS Outfit-Details der vorkommenden Charaktere enthalten
-- imagePrompt MUSS textContent als Text-Overlay-Anweisung enthalten`;
+- imagePrompt: Charaktere mit ✓-Tag nur kurz (Name + Aktion); Charaktere mit ✗-Tag voll beschreiben
+- imagePrompt MUSS textContent als Text-Overlay-Anweisung enthalten
+- imagePrompt soll keine Render-Stil-Beschreibung enthalten — der Server prependiert das`;
 
 const WRITE_TOOL = {
   name: "write_story_slides",
-  description: "Schreibe die Slide-Texte und den Image-Prompt für jeden Slide basierend auf dem bestätigten Plan.",
+  description: "Schreibe die Slide-Texte und den Image-Prompt für jeden Slide basierend auf dem bestätigten Plan. Der visuelle Render-Stil ist projektweit fest — nicht überschreiben.",
   input_schema: {
     type: "object" as const,
     properties: {
       consistencyContext: {
         type: "object",
         properties: {
-          artStyle: { type: "string" },
-          colorPalette: { type: "string" },
-          globalStylePrompt: { type: "string" },
+          colorPalette: { type: "string", description: "Story-spezifische Farbpalette in 1 Satz." },
+          sceneToneNotes: { type: "string", description: "Stimmung/Beleuchtung, ergänzend zum festen Render-Stil. 1-2 Sätze." },
         },
-        required: ["artStyle", "colorPalette", "globalStylePrompt"],
+        required: ["colorPalette", "sceneToneNotes"],
       },
       slides: {
         type: "array",
@@ -477,7 +491,7 @@ export async function writeStorySlides(input: WriteInput): Promise<{
   if (!toolUse) throw new Error("writeStorySlides: no tool_use block in response");
 
   const parsed = toolUse.input as {
-    consistencyContext: { artStyle: string; colorPalette: string; globalStylePrompt: string };
+    consistencyContext: { colorPalette: string; sceneToneNotes: string };
     slides: SlideContent[] | string;
   };
 
@@ -521,14 +535,17 @@ export async function writeStorySlides(input: WriteInput): Promise<{
     }
   }
 
-  // Assemble v2 ConsistencyContext from the plan + writer output
+  // Assemble v2 ConsistencyContext. artStyle is now the project-wide anchor,
+  // not Claude's invention. globalStylePrompt = anchor + per-story tone notes.
+  const globalStylePrompt = `${PROJECT_STYLE_ANCHOR} Color palette: ${parsed.consistencyContext.colorPalette}. Tone: ${parsed.consistencyContext.sceneToneNotes}.`;
+
   const consistencyContext: ConsistencyContext = {
     version: 2,
-    artStyle: parsed.consistencyContext.artStyle,
+    artStyle: PROJECT_STYLE_ANCHOR,
     colorPalette: parsed.consistencyContext.colorPalette,
     scenes: input.plan.scenes,
     characters: input.resolvedCharacters,
-    globalStylePrompt: parsed.consistencyContext.globalStylePrompt,
+    globalStylePrompt,
     styleReferenceUrls: input.styleReferenceUrls ?? [],
     worldBuiltAssetIds: input.resolvedCharacters
       .filter((c) => c.worldBuilt && c.assetId > 0)

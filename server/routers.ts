@@ -67,6 +67,18 @@ const assetRouter = router({
       imageData: z.string(),
       mimeType: z.string().default("image/png"),
       fileName: z.string().default("asset.png"),
+      /**
+       * Optional hint mirroring the bulk-import folder-hint mechanism.
+       * Applied as a strong prior for vision categorization but vision still
+       * has final say. Useful for "I'm uploading 12 sohn variations".
+       */
+      hint: z.object({
+        folderName: z.string().optional(),
+        characterName: z.string().optional(),
+        characterKind: z.enum(CHARACTER_KINDS).optional(),
+        characterAliases: z.array(z.string()).optional(),
+        fallbackCategory: z.enum(ASSET_CATEGORIES).optional(),
+      }).optional(),
     }))
     .mutation(async ({ input }) => {
       const buffer = Buffer.from(input.imageData, "base64");
@@ -113,7 +125,21 @@ const assetRouter = router({
               data: prepared.buffer.toString("base64"),
             };
           }
-          visionResult = await categorizeImage(source, known);
+          const categorizeHint = input.hint
+            ? {
+                folderName: input.hint.folderName,
+                fallbackCategory: input.hint.fallbackCategory,
+                character:
+                  input.hint.characterName && input.hint.characterKind
+                    ? {
+                        name: input.hint.characterName,
+                        kind: input.hint.characterKind,
+                        aliases: input.hint.characterAliases,
+                      }
+                    : undefined,
+              }
+            : undefined;
+          visionResult = await categorizeImage(source, known, categorizeHint);
           if (!input.category) category = visionResult.suggestedCategory;
           characterId = await resolveOrCreateCharacter(visionResult.suggestedCharacter);
         } catch (e) {
