@@ -571,15 +571,22 @@ const generateRouter = router({
 
        // Build a map: characterName -> presigned absolute URL for Atlas Cloud reference_images
       const characterAssetMap = new Map<string, string>();
+      let presignAttempts = 0;
       for (const char of (ctx.characters || [])) {
         if (char.assetId && char.assetId > 0) {
           const asset = usedAssets.find((a) => a.id === char.assetId);
           if (asset?.imageUrl) {
+            presignAttempts++;
             // Convert relative /manus-storage/... to absolute presigned URL
             const presignedUrl = await getPresignedStorageUrl(asset.imageUrl);
             if (presignedUrl) characterAssetMap.set(char.name.toLowerCase(), presignedUrl);
           }
         }
+      }
+      if (presignAttempts > 0 && characterAssetMap.size === 0) {
+        console.warn(
+          `[generate] ${presignAttempts} character ref(s) skipped — no public URL available (STORAGE_BACKEND=local has no presign). Falling back to text-only character descriptions in prompt.`,
+        );
       }
       // Style reference: use assets from 'stil-referenz' category (Mitchells etc.)
       const styleRefAssets = usedAssets.filter(
@@ -611,7 +618,8 @@ const generateRouter = router({
             result = await generateSlideImage(
               slide.imagePrompt, ctx, slide.slideNumber, input.storyId, story.imageFormat,
               charRefUrls,
-              styleReferenceUrls
+              styleReferenceUrls,
+              slideCharacters,
             );
           }
 
@@ -681,7 +689,7 @@ const generateRouter = router({
       } else {
         result = await generateSlideImage(
           slide.imagePrompt, ctx, slide.slideNumber, slide.storyId, story.imageFormat,
-          charRefUrls, styleReferenceUrls
+          charRefUrls, styleReferenceUrls, slideCharacters,
         );
       }
 

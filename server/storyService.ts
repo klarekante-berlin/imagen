@@ -468,7 +468,8 @@ export async function generateSlideImage(
   storyId: number,
   imageFormat: ImageFormat,
   characterReferenceUrls: string[] = [], // Character sheet URLs for this slide's characters
-  styleReferenceUrls: string[] = []      // Global style reference URLs
+  styleReferenceUrls: string[] = [],     // Global style reference URLs
+  slideCharacterNames: string[] = [],    // Names of characters appearing in this slide
 ): Promise<{ imageKey: string; imageUrl: string }> {
 
   const scene = findSceneForSlide(consistencyContext, slideNumber);
@@ -477,9 +478,33 @@ export async function generateSlideImage(
   const nextScene = consistencyContext.scenes[sceneIdx + 1];
   const isLastOfScene = slideNumber === scene.slideRange[1];
 
+  // Build per-slide character description block. This guarantees consistency even
+  // when reference_images can't be passed (e.g. local-storage backend without
+  // a public URL Atlas Cloud can reach).
+  const slideChars = slideCharacterNames
+    .map((name) =>
+      consistencyContext.characters.find(
+        (c) => c.name.toLowerCase() === name.toLowerCase(),
+      ),
+    )
+    .filter((c): c is NonNullable<typeof c> => !!c);
+  const characterBlock =
+    slideChars.length > 0
+      ? "Characters in this slide: " +
+        slideChars
+          .map((c) => {
+            const parts = [`${c.name} — ${c.visualDescription}`];
+            if (c.outfit) parts.push(`outfit: ${c.outfit}`);
+            return parts.join("; ");
+          })
+          .join(" | ") +
+        ". Keep their appearance/outfit identical across slides."
+      : null;
+
   // Build the full prompt with text overlay instruction
   const fullPrompt = [
     consistencyContext.globalStylePrompt,
+    characterBlock,
     `Setting: ${scene.environment}.`,
     scene.environmentLockNotes ? `Lock: ${scene.environmentLockNotes}.` : null,
     isLastOfScene && nextScene && scene.transitionToNext
@@ -504,7 +529,9 @@ export async function generateSlideImage(
   // gpt-image-2 via Atlas Cloud supports 1024x1024 and 1024x1536
   const size = imageFormat === "1:1" ? "1024x1024" : "1024x1536";
 
-  console.log(`[StoryService] Generating slide ${slideNumber} with ${allReferenceUrls.length} reference images`);
+  console.log(
+    `[StoryService] Slide ${slideNumber}/${totalSlides}: ${allReferenceUrls.length} ref images, ${slideChars.length} chars in text (${slideChars.map((c) => c.name).join(", ") || "none"})`,
+  );
 
   // Generate via Atlas Cloud
   const atlasUrl = await atlasGenerateImage({
