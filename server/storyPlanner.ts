@@ -553,9 +553,11 @@ export async function writeStorySlides(input: WriteInput): Promise<{
     }
   }
 
-  // Assemble v2 ConsistencyContext. artStyle is now the project-wide anchor,
-  // not Claude's invention. globalStylePrompt = anchor + per-story tone notes.
-  const globalStylePrompt = `${PROJECT_STYLE_ANCHOR} Color palette: ${parsed.consistencyContext.colorPalette}. Tone: ${parsed.consistencyContext.sceneToneNotes}.`;
+  // Assemble v2 ConsistencyContext. The PROJECT_STYLE_ANCHOR is *not* baked
+  // into globalStylePrompt — generateSlideImage adds it once at the start
+  // and once as a final reminder. Duplicating it here would result in
+  // 3× the same anchor in the final prompt.
+  const globalStylePrompt = `Color palette: ${parsed.consistencyContext.colorPalette}. Tone: ${parsed.consistencyContext.sceneToneNotes}.`;
 
   const consistencyContext: ConsistencyContext = {
     version: 2,

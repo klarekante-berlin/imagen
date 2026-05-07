@@ -626,9 +626,17 @@ export async function generateSlideImage(
     );
   })();
 
-  // Build the full prompt with text overlay instruction. PROJECT_STYLE_ANCHOR
-  // goes first AND last so the rendering style is sticky even when Atlas
-  // truncates or summarizes mid-prompt.
+  // Style-reference behavior hint. When style refs flow (typo/brand sheets),
+  // tell the model to also use them for the in-image typography, not just
+  // overall composition. Without this Atlas treats them as ambient style only.
+  const hasStyleRefs = styleReferenceUrls.length > 0;
+  const styleRefHint = hasStyleRefs
+    ? "Some of the reference images are typography / brand-style sheets — match the in-image text overlay's font weight, color treatment and color highlights to those references."
+    : null;
+
+  // Build the full prompt. PROJECT_STYLE_ANCHOR goes first AND last so the
+  // rendering style is sticky even when Atlas truncates or summarizes
+  // mid-prompt. globalStylePrompt no longer contains the anchor (handled here).
   const fullPrompt = [
     PROJECT_STYLE_ANCHOR,
     consistencyContext.globalStylePrompt,
@@ -641,6 +649,7 @@ export async function generateSlideImage(
     cleanedSlidePrompt,
     `Slide ${slideNumber} of ${totalSlides}.`,
     "Text must be large, bold, clearly readable, positioned in the lower or upper third of the image.",
+    styleRefHint,
     `Final reminder: ${PROJECT_STYLE_ANCHOR}`,
   ]
     .filter(Boolean)
