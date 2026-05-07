@@ -121,3 +121,7 @@ graphify-out/
 # bulk-import source assets (large binaries, not source code)
 klarekante-style/
 import-errors.log
+
+# local-dev stack (filesystem storage backend + dockerized mysql data)
+storage-data/
+docker-data/
