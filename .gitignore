@@ -117,3 +117,7 @@ graphify-out/
 
 # manus runtime logs
 .manus-logs/
+
+# bulk-import source assets (large binaries, not source code)
+klarekante-style/
+import-errors.log

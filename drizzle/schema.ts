@@ -1,9 +1,12 @@
 import {
+  boolean,
+  index,
   int,
   mysqlEnum,
   mysqlTable,
   text,
   timestamp,
+  uniqueIndex,
   varchar,
   json,
 } from "drizzle-orm/mysql-core";
@@ -42,22 +45,85 @@ export const ASSET_CATEGORIES = [
 
 export type AssetCategory = (typeof ASSET_CATEGORIES)[number];
 
-export const assets = mysqlTable("assets", {
-  id: int("id").autoincrement().primaryKey(),
-  name: varchar("name", { length: 255 }).notNull(),
-  category: mysqlEnum("category", ASSET_CATEGORIES).notNull().default("sonstiges"),
-  description: text("description"),
-  /** S3 storage key for the image */
-  imageKey: varchar("imageKey", { length: 512 }).notNull(),
-  /** Public URL served via /manus-storage/ */
-  imageUrl: varchar("imageUrl", { length: 1024 }).notNull(),
-  /** Detailed visual description used as reference in image prompts */
-  visualDescription: text("visualDescription"),
-  /** Tags for search/filter */
-  tags: json("tags").$type<string[]>(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+export const CHARACTER_KINDS = [
+  "family",
+  "public_figure",
+  "fictional",
+  "world-built",
+] as const;
+export type CharacterKind = (typeof CHARACTER_KINDS)[number];
+
+export const characters = mysqlTable(
+  "characters",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    aliases: json("aliases").$type<string[]>(),
+    kind: mysqlEnum("kind", CHARACTER_KINDS).notNull().default("family"),
+    defaultDescription: text("defaultDescription"),
+    defaultStyleNotes: text("defaultStyleNotes"),
+    primaryAssetId: int("primaryAssetId"),
+    createdByStoryId: int("createdByStoryId"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    nameIdx: uniqueIndex("characters_name_idx").on(t.name),
+    kindIdx: index("characters_kind_idx").on(t.kind),
+  })
+);
+
+export type Character = typeof characters.$inferSelect;
+export type InsertCharacter = typeof characters.$inferInsert;
+
+export const REVIEW_STATUSES = ["pending", "approved", "needs_review"] as const;
+export type ReviewStatus = (typeof REVIEW_STATUSES)[number];
+
+export const assets = mysqlTable(
+  "assets",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    category: mysqlEnum("category", ASSET_CATEGORIES).notNull().default("sonstiges"),
+    description: text("description"),
+    /** S3 storage key for the image */
+    imageKey: varchar("imageKey", { length: 512 }).notNull(),
+    /** Public URL served via /manus-storage/ */
+    imageUrl: varchar("imageUrl", { length: 1024 }).notNull(),
+    /** Detailed visual description used as reference in image prompts */
+    visualDescription: text("visualDescription"),
+    /** Tags for search/filter */
+    tags: json("tags").$type<string[]>(),
+    /** FK -> characters.id (nullable: not every asset is a person) */
+    characterId: int("characterId"),
+    /** Clean reference shot vs scene/variation */
+    isCharacterSheet: boolean("isCharacterSheet").notNull().default(false),
+    /** Vision-extracted structured metadata */
+    pose: varchar("pose", { length: 128 }),
+    outfit: text("outfit"),
+    setting: varchar("setting", { length: 255 }),
+    mood: varchar("mood", { length: 64 }),
+    dominantColors: json("dominantColors").$type<string[]>(),
+    /** sha256 — dedup + idempotency */
+    contentHash: varchar("contentHash", { length: 64 }),
+    /** Original ingest path (e.g. klarekante-style/papa/foo.png) */
+    sourcePath: varchar("sourcePath", { length: 1024 }),
+    /** Audit: was this auto-categorized via vision? */
+    autoCategorized: boolean("autoCategorized").notNull().default(false),
+    /** Vision confidence 0-100 */
+    visionConfidence: int("visionConfidence"),
+    /** Drives Library review-UI */
+    reviewStatus: mysqlEnum("reviewStatus", REVIEW_STATUSES).notNull().default("approved"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    characterIdx: index("assets_character_idx").on(t.characterId),
+    contentHashIdx: uniqueIndex("assets_content_hash_idx").on(t.contentHash),
+    reviewStatusIdx: index("assets_review_status_idx").on(t.reviewStatus),
+    sourcePathIdx: index("assets_source_path_idx").on(t.sourcePath),
+  })
+);
 
 export type Asset = typeof assets.$inferSelect;
 export type InsertAsset = typeof assets.$inferInsert;
