@@ -158,12 +158,13 @@ const ATLAS_MODEL_TEXT = "openai/gpt-image-2/text-to-image";
 const ATLAS_MODEL_EDIT = "openai/gpt-image-2/edit";
 
 /**
- * Project-wide visual DNA. Always prepended to every slide prompt so the
- * style stays locked across stories — Claude can add per-story flavor in
- * globalStylePrompt but cannot redefine the foundation.
+ * Visual style is DERIVED from the stil-referenz / typografie assets that
+ * flow as reference_images, NOT from a hardcoded prompt string. A hardcoded
+ * anchor would override what the refs are meant to dictate. Kept as an
+ * empty string for legacy callers; the file used to export a Mitchell/Pixar
+ * description that has now been removed.
  */
-export const PROJECT_STYLE_ANCHOR =
-  "3D cartoon render in the style of The Mitchells vs the Machines / Pixar — expressive faces, bold confident outlines, warm cinematic lighting, detailed fabric and skin textures, slightly stylized proportions. Always this exact rendering style.";
+export const PROJECT_STYLE_ANCHOR = "";
 
 /**
  * Server-side scrubber for Claude's slidePrompt. Despite explicit prompt
@@ -443,7 +444,7 @@ CAROUSEL-STRUKTUR (10 Slides):
 KONSISTENZ-REGELN:
 - Outfits, Umgebungen und Charaktere bleiben in ALLEN 10 Slides identisch
 - Kein Outfit-Wechsel, kein Setting-Wechsel innerhalb einer Story
-- Der Bildstil ist 3D-Cartoon-Render im Pixar/Mitchell's-Stil – warm, expressiv, detailreich
+- Der visuelle Render-Stil kommt aus den stil-referenz Assets — beschreibe ihn NICHT im Prompt
 
 TEXT-OVERLAY-REGELN:
 - textContent erscheint DIREKT IM BILD als großer, lesbarer Text
@@ -470,7 +471,7 @@ Erstelle eine JSON-Antwort mit dieser exakten Struktur:
 {
   "title": "Kurzer, einprägsamer Carousel-Titel (max 5 Wörter)",
   "consistencyContext": {
-    "artStyle": "3D cartoon render, Pixar animation style, expressive faces, bold outlines, warm cinematic lighting, detailed textures, Mitchell's vs the Machines aesthetic",
+    "artStyle": "(leer lassen — Stil kommt aus den stil-referenz Asset-Bildern)",
     "colorPalette": "Beschreibe die Farbpalette die zu diesem spezifischen Thema und Setting passt (aus der Szene entstehend, nicht aufgezwungen)",
     "environment": "Hauptumgebung/Setting das in ALLEN Slides gleich bleibt – sehr spezifisch beschreiben",
     "characters": [
@@ -626,19 +627,18 @@ export async function generateSlideImage(
     );
   })();
 
-  // Typography & overall style come from the stil-referenz / typografie assets.
-  // When they flow, instruct the model to copy their typography treatment
-  // (font, weight, color, highlights, layout) for the in-image text overlay.
-  // No hardcoded "make it bold" rule — that conflicts with what the refs show.
+  // Style refs (rendering look + typography) are the AUTHORITY for everything
+  // visual. When they flow, the model must copy their render style and the
+  // typography treatment for the in-image text overlay. No hardcoded style.
   const hasStyleRefs = styleReferenceUrls.length > 0;
   const styleRefHint = hasStyleRefs
-    ? "Some of the reference images are typography / brand-style sheets. Use them as the AUTHORITY for the in-image text overlay: font, weight, color, highlight treatment, line breaks and placement must match those references exactly. Do not invent a different typography style."
+    ? "STYLE AUTHORITY: the reference images marked as style/typography sheets define the visual identity. Copy their rendering style (cartoon look, color treatment, lighting), and copy their typography exactly for the in-image text overlay (font, weight, color, highlight bars, line breaks, placement). Do NOT invent a different rendering or typography style."
     : null;
 
-  // Build the full prompt. PROJECT_STYLE_ANCHOR is prepended once (gpt-image-2
-  // is LLM-like — start placement is enough, repeating it just bloats tokens).
+  // Build the full prompt. NO hardcoded render-style anchor — style is the
+  // authority of stil-referenz refs (typography, color, render look). Server
+  // only contributes: scene/lock, characters, slide action, ref-authority hint.
   const fullPrompt = [
-    PROJECT_STYLE_ANCHOR,
     consistencyContext.globalStylePrompt,
     characterBlock,
     `Setting: ${scene.environment}.`,
