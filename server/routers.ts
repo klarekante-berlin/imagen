@@ -418,13 +418,14 @@ const storyRouter = router({
           }
         }
 
-        // Resolve presigned URL if we have an assetId
+        // Persist the relative /manus-storage/... path only — never the resolved
+        // data URI. Resolving happens fresh at image-gen time. Persisting a
+        // multi-MB data URI bloats the stories JSON column past max_allowed_packet.
         let referenceImageUrl: string | undefined;
         if (assetId) {
           const a = await getAssetById(assetId);
           if (a?.imageUrl) {
-            const presigned = await getPresignedStorageUrl(a.imageUrl);
-            referenceImageUrl = presigned ?? a.imageUrl;
+            referenceImageUrl = a.imageUrl;
           }
           usedAssetIds.push(assetId);
         }
