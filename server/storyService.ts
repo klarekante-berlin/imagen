@@ -626,12 +626,13 @@ export async function generateSlideImage(
     );
   })();
 
-  // Style-reference behavior hint. When style refs flow (typo/brand sheets),
-  // tell the model to also use them for the in-image typography, not just
-  // overall composition. Without this Atlas treats them as ambient style only.
+  // Typography & overall style come from the stil-referenz / typografie assets.
+  // When they flow, instruct the model to copy their typography treatment
+  // (font, weight, color, highlights, layout) for the in-image text overlay.
+  // No hardcoded "make it bold" rule — that conflicts with what the refs show.
   const hasStyleRefs = styleReferenceUrls.length > 0;
   const styleRefHint = hasStyleRefs
-    ? "Some of the reference images are typography / brand-style sheets — match the in-image text overlay's font weight, color treatment and color highlights to those references."
+    ? "Some of the reference images are typography / brand-style sheets. Use them as the AUTHORITY for the in-image text overlay: font, weight, color, highlight treatment, line breaks and placement must match those references exactly. Do not invent a different typography style."
     : null;
 
   // Build the full prompt. PROJECT_STYLE_ANCHOR is prepended once (gpt-image-2
@@ -646,7 +647,6 @@ export async function generateSlideImage(
       ? `Transition cue: ${scene.transitionToNext} (next scene: ${nextScene.environment}).`
       : null,
     cleanedSlidePrompt,
-    "Text overlay: large, bold, clearly readable.",
     styleRefHint,
   ]
     .filter(Boolean)

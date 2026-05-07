@@ -374,9 +374,10 @@ imagePrompt darf NIEMALS enthalten:
   ❌ Beleuchtungs-Beschreibung ("warmes goldenes Sonnenlicht") — kommt aus sceneToneNotes
 
 GUT: "Toni sits at the kitchen table, jaw dropped, pointing aggressively at the viewer.
-       Large bold text overlay above: 'Sonntagsfrühstück. Alles perfekt. Noch.'"
+       Text overlay shows: 'Sonntagsfrühstück. Alles perfekt. Noch.'"
 SCHLECHT: "3D Pixar render, 1080x1080. Berliner Küche, warmes Licht. Toni (kahlköpfig,
-            bärtig, blau-kariertes Hemd) sitzt am Tisch …"
+            bärtig, blau-kariertes Hemd) sitzt am Tisch. Large bold white text
+            in the upper third reads 'Sonntagsfrühstück'."
 
 CHARAKTERE IM imagePrompt:
 - Charaktere mit ✓ HAT REF → nur Name + Aktion ("Papa lacht", "Sohn rollt Augen")
@@ -385,8 +386,9 @@ CHARAKTERE IM imagePrompt:
 
 TEXT-OVERLAY:
 - textContent muss auch ohne Bild verständlich sein
-- imagePrompt MUSS textContent als großen Text-Overlay erwähnen
-- Position: meist obere oder untere Drittel
+- imagePrompt MUSS erwähnen DASS textContent als Text-Overlay im Bild erscheint
+- KEINE hardcoded Schrift/Farbe/Position — Typografie kommt aus den stil-referenz Assets
+- Erwähne nur den Inhalt, keine "bold white", "upper third" etc — der Server delegiert das an die Refs
 
 WICHTIG ZU STRINGS:
 - Verwende NIEMALS doppelte Anführungszeichen " innerhalb von String-Werten — bricht JSON
