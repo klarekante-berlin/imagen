@@ -1,19 +1,32 @@
-export { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
+import {
+  CheckCircleIcon,
+  AlertCircleIcon,
+  LoaderIcon,
+  ImageIcon,
+} from "lucide-react";
 
-// Generate login URL at runtime so redirect URI reflects the current origin.
-export const getLoginUrl = () => {
-  const oauthPortalUrl = import.meta.env.VITE_OAUTH_PORTAL_URL;
-  const appId = import.meta.env.VITE_APP_ID;
-  if (!oauthPortalUrl || !appId) return "/";
+export const CATEGORY_LABELS: Record<string, string> = {
+  all: "Alle",
+  familie: "Familie",
+  historisch: "Historisch",
+  sport: "Sport",
+  musik: "Musik",
+  politiker: "Politiker",
+  "tech-ceo": "Tech CEOs",
+  tiere: "Tiere",
+  umgebungen: "Umgebungen",
+  fahrzeuge: "Fahrzeuge",
+  items: "Items",
+  "stil-referenz": "Stil-Referenz",
+  sonstiges: "Sonstiges",
+};
 
-  const redirectUri = `${window.location.origin}/api/oauth/callback`;
-  const state = btoa(redirectUri);
-
-  const url = new URL(`${oauthPortalUrl}/app-auth`);
-  url.searchParams.set("appId", appId);
-  url.searchParams.set("redirectUri", redirectUri);
-  url.searchParams.set("state", state);
-  url.searchParams.set("type", "signIn");
-
-  return url.toString();
+export const STATUS_CONFIG = {
+  complete: { label: "Fertig", color: "bg-green-500/20 text-green-400", icon: CheckCircleIcon },
+  error: { label: "Fehler", color: "bg-red-500/20 text-red-400", icon: AlertCircleIcon },
+  generating: { label: "Generiert...", color: "bg-yellow-500/20 text-yellow-400", icon: LoaderIcon },
+  pending: { label: "Ausstehend", color: "bg-muted text-muted-foreground", icon: ImageIcon },
+  draft: { label: "Entwurf", color: "bg-muted text-muted-foreground", icon: ImageIcon },
+  generating_text: { label: "Text wird generiert...", color: "bg-blue-500/20 text-blue-400", icon: LoaderIcon },
+  generating_images: { label: "Bilder werden generiert...", color: "bg-yellow-500/20 text-yellow-400", icon: LoaderIcon },
 };

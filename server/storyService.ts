@@ -1,77 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { Asset, AiModel, ImageFormat } from "../drizzle/schema";
+import { Asset, ImageFormat } from "../drizzle/schema";
+import type {
+  ConsistencyContext,
+  ConsistencyContextV1,
+  ConsistencyContextV2,
+  Scene,
+} from "@shared/types";
 import { storagePut, storageReadLocal } from "./storage";
 import { ENV } from "./_core/env";
 import { prepareImageForAtlasRef } from "./_core/imagePrep";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-/** Legacy v1 shape — single environment, fixed 10 slides. Kept for backcompat reads. */
-export interface ConsistencyContextV1 {
-  artStyle: string;
-  colorPalette: string;
-  environment: string;
-  characters: Array<{
-    assetId: number;
-    name: string;
-    outfit: string;
-    visualDescription: string;
-    referenceImageUrl?: string;
-  }>;
-  globalStylePrompt: string;
-  styleReferenceUrls?: string[];
-}
-
-/** Multi-scene story v2. */
-export interface Scene {
-  id: string;                     // "scene-1" — stable across regenerates
-  slideRange: [number, number];   // 1-indexed inclusive
-  environment: string;            // location description
-  environmentLockNotes: string;   // "same window, same coffee mug"
-  transitionToNext?: string;      // bridge text on the last slide of this scene
-  environmentRefAssetId?: number; // Phase-3: world-built env reference
-}
-
-export interface ConsistencyCharacterRef {
-  characterId: number;            // FK to characters.id (0 = pre-v2 legacy)
-  assetId: number;                // primary sheet
-  name: string;
-  outfit: string;
-  visualDescription: string;
-  referenceImageUrl?: string;
-  worldBuilt?: boolean;
-}
-
-export interface ConsistencyContextV2 {
-  version: 2;
-  artStyle: string;
-  colorPalette: string;
-  scenes: Scene[];
-  characters: ConsistencyCharacterRef[];
-  globalStylePrompt: string;
-  styleReferenceUrls?: string[];
-  worldBuiltAssetIds: number[];
-  slideCount: number;             // 3..10
-}
-
-/** Default export is v2. v1 kept under an explicit alias. */
-export type ConsistencyContext = ConsistencyContextV2;
-
-export interface SlideContent {
-  slideNumber: number;
-  textContent: string;
-  caption: string;
-  charactersInSlide: string[];
-  imagePrompt: string;
-  sceneId?: string;
-}
-
-export interface StoryContent {
-  title: string;
-  consistencyContext: ConsistencyContext;
-  slides: SlideContent[];
-  usedAssetIds: number[];
-}
 
 // ─── V1 → V2 normalize ────────────────────────────────────────────────────────
 
@@ -166,32 +103,6 @@ const ATLAS_MODEL_EDIT = "openai/gpt-image-2/edit";
  */
 export const PROJECT_STYLE_ANCHOR = "";
 
-/**
- * Server-side scrubber for Claude's slidePrompt. Despite explicit prompt
- * rules, Claude occasionally re-adds render-style/format/lighting clauses
- * that conflict with our project anchor + scene block. Strip sentences
- * that contain those forbidden phrases before assembling the final prompt.
- */
-const FORBIDDEN_PROMPT_PHRASES = [
-  /\b(3d|cartoon)\s+(render|cartoon)/gi,
-  /\bpixar[-\s]?style\b/gi,
-  /\b1080\s*x\s*1080(?:px)?\b/gi,
-  /\b1080\s*x\s*1350(?:px)?\b/gi,
-  /\bsquare\s+format\b/gi,
-  /\baspect\s+ratio\b/gi,
-  /\bquadratisches\s+format\b/gi,
-  /\bhochformat\b/gi,
-];
-
-function stripForbiddenStyleClauses(prompt: string): string {
-  // Split by sentence-ish boundaries, drop sentences that match a forbidden
-  // phrase, rejoin. Conservative: only drops the offending sentence, not the
-  // whole prompt.
-  const parts = prompt.split(/(?<=[.!?])\s+/);
-  const kept = parts.filter((s) => !FORBIDDEN_PROMPT_PHRASES.some((rx) => rx.test(s)));
-  return kept.join(" ").trim();
-}
-
 function getAtlasKey(): string {
   const key = ENV.atlascloudApiKey || process.env.ATLASCLOUD_API_KEY;
   if (!key) throw new Error("ATLASCLOUD_API_KEY not configured");
@@ -227,24 +138,6 @@ async function atlasUploadMedia(
   return url;
 }
 
-/**
- * Convert any reference URL into something Atlas's edit endpoint accepts:
- * - http(s) URL → passed through unchanged
- * - data: URI → decoded, uploaded via uploadMedia, returns the resulting URL
- */
-async function ensureAtlasUrl(refUrl: string, idx: number): Promise<string> {
-  if (refUrl.startsWith("http")) return refUrl;
-  if (!refUrl.startsWith("data:")) {
-    throw new Error(`unsupported ref URL scheme: ${refUrl.slice(0, 30)}`);
-  }
-  const match = /^data:([^;]+);base64,(.+)$/.exec(refUrl);
-  if (!match) throw new Error("malformed data: URI");
-  const mime = match[1];
-  const buffer = Buffer.from(match[2], "base64");
-  const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
-  return atlasUploadMedia(buffer, mime, `ref-${Date.now()}-${idx}.${ext}`);
-}
-
 async function atlasGenerateImage(params: {
   prompt: string;
   size: string;
@@ -272,7 +165,19 @@ async function atlasGenerateImage(params: {
     const refs: string[] = [];
     for (let i = 0; i < rawRefs.length; i++) {
       try {
-        refs.push(await ensureAtlasUrl(rawRefs[i], i));
+        const refUrl = rawRefs[i];
+        if (refUrl.startsWith("http")) {
+          refs.push(refUrl);
+        } else if (refUrl.startsWith("data:")) {
+          const match = /^data:([^;]+);base64,(.+)$/.exec(refUrl);
+          if (!match) throw new Error("malformed data: URI");
+          const mime = match[1];
+          const buffer = Buffer.from(match[2], "base64");
+          const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
+          refs.push(await atlasUploadMedia(buffer, mime, `ref-${Date.now()}-${i}.${ext}`));
+        } else {
+          throw new Error(`unsupported ref URL scheme: ${refUrl.slice(0, 30)}`);
+        }
       } catch (e) {
         console.error(`[atlas] failed to resolve ref #${i}:`, e);
       }
@@ -403,169 +308,6 @@ Matching-Regeln:
   }
 }
 
-// ─── Story Text Generation ────────────────────────────────────────────────────
-
-export async function generateStoryText(
-  theme: string,
-  selectedAssets: Asset[],
-  model: AiModel,
-  imageFormat: ImageFormat
-): Promise<StoryContent> {
-  const client = getAnthropicClient();
-
-  const assetDescriptions = selectedAssets
-    .map(
-      (a) =>
-        `- ID:${a.id} | "${a.name}" (${a.category}): ${a.visualDescription || a.description || "Keine Beschreibung"}`
-    )
-    .join("\n");
-
-  const aspectRatio =
-    imageFormat === "1:1" ? "quadratisch 1080x1080px" : "Hochformat 1080x1350px";
-
-  const systemPrompt = `Du bist ein erfahrener Content-Stratege für Instagram Carousel Stories im Stil des Formats "Hey was war denn das?" von klarekante.berlin.
-
-DEIN STIL:
-- Berliner Direktheit: kein Bullshit, kein Wellness-Coach-Sprech
-- Satirisch und trocken wie Ricky Gervais – aber mit Herz
-- Zahlen und Fakten als Schockmomente ("41 FUCKING PROZENT!")
-- Persönliche Anekdoten als emotionale Auflösung
-- Jeder Slide hat eine klare Aussage – kein Fülltext
-- Dialoge sind knapp, pointiert, real
-
-CAROUSEL-STRUKTUR (10 Slides):
-- Slide 1: HOOK – ein Satz der sofort trifft, Frage oder provokante These
-- Slide 2-3: KONTEXT – das Problem in Zahlen/Fakten aufbauen
-- Slide 4-5: ESKALATION – die Absurdität des Systems zeigen
-- Slide 6-7: WENDEPUNKT – persönliche Geschichte oder konkretes Beispiel
-- Slide 8-9: AUFLÖSUNG – die eigentliche Botschaft, ehrlich und direkt
-- Slide 10: CTA – Aufruf zum Folgen, Kommentieren oder Teilen
-
-KONSISTENZ-REGELN:
-- Outfits, Umgebungen und Charaktere bleiben in ALLEN 10 Slides identisch
-- Kein Outfit-Wechsel, kein Setting-Wechsel innerhalb einer Story
-- Der visuelle Render-Stil kommt aus den stil-referenz Assets — beschreibe ihn NICHT im Prompt
-
-TEXT-OVERLAY-REGELN:
-- textContent erscheint DIREKT IM BILD als großer, lesbarer Text
-- Max 2-3 kurze Sätze – kein Fließtext
-- Darf Zahlen, Ausrufezeichen, Kursivschrift-Hinweise enthalten
-- Muss auch ohne Bild verständlich sein
-
-Antworte IMMER als valides JSON ohne Markdown-Codeblöcke.`;
-
-  const userPrompt = `Erstelle ein Instagram Carousel zum Thema: "${theme}"
-
-${
-  selectedAssets.length > 0
-    ? `Charaktere und Assets für diese Story (verwende diese exakt):
-${assetDescriptions}
-
-WICHTIG: Die assetId in den Charakteren muss mit den IDs oben übereinstimmen!`
-    : "Keine spezifischen Charaktere ausgewählt – erfinde passende Charaktere die zum Thema passen."
-}
-
-Bildformat: ${aspectRatio}
-
-Erstelle eine JSON-Antwort mit dieser exakten Struktur:
-{
-  "title": "Kurzer, einprägsamer Carousel-Titel (max 5 Wörter)",
-  "consistencyContext": {
-    "artStyle": "(leer lassen — Stil kommt aus den stil-referenz Asset-Bildern)",
-    "colorPalette": "Beschreibe die Farbpalette die zu diesem spezifischen Thema und Setting passt (aus der Szene entstehend, nicht aufgezwungen)",
-    "environment": "Hauptumgebung/Setting das in ALLEN Slides gleich bleibt – sehr spezifisch beschreiben",
-    "characters": [
-      {
-        "assetId": <ID aus den verfügbaren Assets oder 0 wenn kein Asset>,
-        "name": "Charaktername",
-        "outfit": "EXAKTE Outfit-Beschreibung die in ALLEN Slides identisch bleibt – sehr detailliert",
-        "visualDescription": "Vollständige visuelle Beschreibung: Körperbau, Gesicht, Haare, Alter, Ausdruck – sehr detailliert für Bildgenerierung"
-      }
-    ],
-    "globalStylePrompt": "Einziger konsistenter Style-String für ALLE Slides. Enthält: Rendering-Stil, Charakterbeschreibungen mit Outfits, Setting. Englisch. Max 100 Wörter."
-  },
-  "slides": [
-    {
-      "slideNumber": 1,
-      "textContent": "TEXT DER DIREKT IM BILD ERSCHEINT – max 2-3 kurze Sätze auf Deutsch. Provokant, witzig oder emotional.",
-      "caption": "Instagram-Caption für diesen Slide (1-2 Sätze + Emojis)",
-      "charactersInSlide": ["Namen der Charaktere in diesem Slide"],
-      "imagePrompt": "Detaillierter Bildprompt auf Englisch. Szene + Charaktere + Aktion + Ausdruck. MUSS enthalten: 1) globalStylePrompt, 2) Outfit-Details der vorkommenden Charaktere, 3) die exakte Szene, 4) den deutschen textContent als großen lesbaren Text im Bild (bold, clear, readable font, positioned at bottom or top third)"
-    }
-  ],
-  "usedAssetIds": [<IDs der verwendeten Assets>]
-}
-
-WICHTIG:
-- Genau 10 Slides
-- Jeder imagePrompt MUSS den textContent als Text-Overlay im Bild enthalten
-- Jeder imagePrompt MUSS die Outfit-Details der vorkommenden Charaktere enthalten
-- Die Story muss einen echten narrativen Bogen haben: Hook → Aufbau → Eskalation → Wendung → Auflösung → CTA`;
-
-  const claudeModel =
-    model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
-
-  // Retry with exponential backoff for overloaded errors (HTTP 529)
-  let lastError: Error = new Error("Unknown error");
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    try {
-      const response = await client.messages.create({
-        model: claudeModel,
-        max_tokens: 8000,
-        messages: [{ role: "user", content: userPrompt }],
-        system: systemPrompt,
-      });
-
-      const content = response.content[0];
-      if (content.type !== "text") throw new Error("Unexpected response type from Claude");
-
-      // Strip potential markdown code blocks
-      let jsonText = content.text.trim();
-      if (jsonText.startsWith("```")) {
-        jsonText = jsonText.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
-      }
-
-      const parsed = JSON.parse(jsonText) as {
-        title: string;
-        consistencyContext: ConsistencyContextV1 | ConsistencyContextV2;
-        slides: SlideContent[];
-        usedAssetIds: number[];
-      };
-
-      if (
-        !parsed.title ||
-        !parsed.consistencyContext ||
-        !Array.isArray(parsed.slides) ||
-        parsed.slides.length !== 10
-      ) {
-        throw new Error(
-          `Invalid story structure: got ${parsed.slides?.length ?? 0} slides, expected 10`
-        );
-      }
-
-      const normalized = normalizeConsistencyContext(parsed.consistencyContext);
-      if (!normalized) throw new Error("Failed to normalize consistencyContext");
-
-      return {
-        title: parsed.title,
-        consistencyContext: normalized,
-        slides: parsed.slides,
-        usedAssetIds: parsed.usedAssetIds,
-      };
-    } catch (err: unknown) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      const isOverloaded =
-        lastError.message.includes("529") || lastError.message.includes("overloaded");
-      if (!isOverloaded || attempt === 4) throw lastError;
-      const delay = Math.pow(2, attempt) * 5000; // 10s, 20s, 40s
-      console.log(
-        `[StoryService] Anthropic overloaded, retry ${attempt}/4 in ${delay / 1000}s...`
-      );
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-  }
-  throw lastError;
-}
 
 // ─── Image Generation via Atlas Cloud (gpt-image-2) with Reference Images ────
 
@@ -588,7 +330,23 @@ export async function generateSlideImage(
 
   // Defensive: strip Claude-injected style/format clauses from slidePrompt.
   // These should be set by the project anchor + scene block, not Claude.
-  const cleanedSlidePrompt = stripForbiddenStyleClauses(slidePrompt);
+  // Split by sentence-ish boundaries, drop sentences containing a forbidden
+  // phrase, rejoin. Conservative: only drops the offending sentence.
+  const FORBIDDEN_PROMPT_PHRASES = [
+    /\b(3d|cartoon)\s+(render|cartoon)/gi,
+    /\bpixar[-\s]?style\b/gi,
+    /\b1080\s*x\s*1080(?:px)?\b/gi,
+    /\b1080\s*x\s*1350(?:px)?\b/gi,
+    /\bsquare\s+format\b/gi,
+    /\baspect\s+ratio\b/gi,
+    /\bquadratisches\s+format\b/gi,
+    /\bhochformat\b/gi,
+  ];
+  const cleanedSlidePrompt = slidePrompt
+    .split(/(?<=[.!?])\s+/)
+    .filter((s) => !FORBIDDEN_PROMPT_PHRASES.some((rx) => rx.test(s)))
+    .join(" ")
+    .trim();
 
   // Build per-slide character block. When the character has a reference image
   // attached (via characterReferenceUrls), the model already sees the full
@@ -730,21 +488,6 @@ export async function generateSlideImageFreepik(
   const { url } = await storagePut(key, imageBuffer, "image/png");
 
   return { imageKey: key, imageUrl: url };
-}
-
-// ─── Character Detection (simple text matching) ───────────────────────────────
-
-export function detectCharactersInText(
-  text: string,
-  characters: ConsistencyContext["characters"]
-): string[] {
-  const found: string[] = [];
-  for (const char of characters) {
-    if (text.toLowerCase().includes(char.name.toLowerCase())) {
-      found.push(char.name);
-    }
-  }
-  return found;
 }
 
 // ─── Reference Image URL Helper ───────────────────────────────────────────────

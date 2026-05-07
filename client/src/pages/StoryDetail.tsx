@@ -12,22 +12,11 @@ import {
   RefreshCwIcon,
   ArrowLeftIcon,
   ImageIcon,
-  CheckCircleIcon,
-  AlertCircleIcon,
   LoaderIcon,
   ZapIcon,
 } from "lucide-react";
 import type { Slide } from "../../../drizzle/schema";
-
-const STATUS_CONFIG = {
-  complete: { label: "Fertig", color: "bg-green-500/20 text-green-400", icon: CheckCircleIcon },
-  error: { label: "Fehler", color: "bg-red-500/20 text-red-400", icon: AlertCircleIcon },
-  generating: { label: "Generiert...", color: "bg-yellow-500/20 text-yellow-400", icon: LoaderIcon },
-  pending: { label: "Ausstehend", color: "bg-muted text-muted-foreground", icon: ImageIcon },
-  draft: { label: "Entwurf", color: "bg-muted text-muted-foreground", icon: ImageIcon },
-  generating_text: { label: "Text wird generiert...", color: "bg-blue-500/20 text-blue-400", icon: LoaderIcon },
-  generating_images: { label: "Bilder werden generiert...", color: "bg-yellow-500/20 text-yellow-400", icon: LoaderIcon },
-};
+import { STATUS_CONFIG } from "@/const";
 
 export default function StoryDetail() {
   const params = useParams<{ id: string }>();

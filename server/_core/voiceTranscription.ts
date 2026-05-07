@@ -249,7 +249,7 @@ function getLanguageName(langCode: string): string {
  * import { transcribeAudio } from "./_core/voiceTranscription";
  * 
  * export const voiceRouter = router({
- *   transcribe: protectedProcedure
+ *   transcribe: publicProcedure
  *     .input(z.object({
  *       audioUrl: z.string(),
  *       language: z.string().optional(),
@@ -269,7 +269,6 @@ function getLanguageName(langCode: string): string {
  *       
  *       // Optionally save transcription to database
  *       await db.insert(transcriptions).values({
- *         userId: ctx.user.id,
  *         text: result.text,
  *         duration: result.duration,
  *         language: result.language,

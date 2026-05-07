@@ -1,15 +1,11 @@
 import { useLocation, Link } from "wouter";
 import { cn } from "@/lib/utils";
-import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
 import { Button } from "@/components/ui/button";
 import {
   ImageIcon,
   BookOpenIcon,
   ArchiveIcon,
   SparklesIcon,
-  LogInIcon,
-  LogOutIcon,
   MenuIcon,
   XIcon,
 } from "lucide-react";
@@ -28,7 +24,6 @@ interface AppLayoutProps {
 
 export default function AppLayout({ children }: AppLayoutProps) {
   const [location] = useLocation();
-  const { user, isAuthenticated, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
@@ -70,35 +65,6 @@ export default function AppLayout({ children }: AppLayoutProps) {
             );
           })}
         </nav>
-
-        {/* User section */}
-        <div className="px-3 py-4 border-t border-sidebar-border">
-          {isAuthenticated ? (
-            <div className="flex items-center gap-3 px-3 py-2">
-              <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary text-xs font-bold">
-                {user?.name?.charAt(0)?.toUpperCase() || "U"}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-sidebar-foreground truncate">{user?.name || "User"}</p>
-                <p className="text-xs text-muted-foreground truncate">{user?.email || ""}</p>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                onClick={() => logout()}
-                title="Abmelden"
-              >
-                <LogOutIcon className="w-3.5 h-3.5" />
-              </Button>
-            </div>
-          ) : (
-            <Button variant="outline" className="w-full gap-2 text-sm" onClick={() => window.location.href = getLoginUrl()}>
-              <LogInIcon className="w-4 h-4" />
-              Anmelden
-            </Button>
-          )}
-        </div>
       </aside>
 
       {/* Mobile overlay */}

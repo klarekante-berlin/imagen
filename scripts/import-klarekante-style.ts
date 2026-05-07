@@ -32,7 +32,6 @@ import {
   updateCharacter,
   resolveOrCreateCharacter,
   getAssetByContentHash,
-  getAssetBySourcePath,
 } from "../server/db";
 import { storagePut } from "../server/storage";
 import { getPresignedStorageUrl } from "../server/storyService";
@@ -185,8 +184,6 @@ async function importOne(
     if (!args.force) {
       const byHash = await getAssetByContentHash(contentHash);
       if (byHash) return { status: "skipped_duplicate", file: sourcePath, reason: "hash exists" };
-      const byPath = await getAssetBySourcePath(sourcePath);
-      if (byPath) return { status: "skipped_duplicate", file: sourcePath, reason: "sourcePath exists" };
     }
 
     const mime = mimeFor(absPath);
