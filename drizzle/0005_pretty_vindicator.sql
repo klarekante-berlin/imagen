@@ -21,7 +21,7 @@ ALTER TABLE `assets` ADD `setting` varchar(255);--> statement-breakpoint
 ALTER TABLE `assets` ADD `mood` varchar(64);--> statement-breakpoint
 ALTER TABLE `assets` ADD `dominantColors` json;--> statement-breakpoint
 ALTER TABLE `assets` ADD `contentHash` varchar(64);--> statement-breakpoint
-ALTER TABLE `assets` ADD `sourcePath` varchar(1024);--> statement-breakpoint
+ALTER TABLE `assets` ADD `sourcePath` varchar(512);--> statement-breakpoint
 ALTER TABLE `assets` ADD `autoCategorized` boolean DEFAULT false NOT NULL;--> statement-breakpoint
 ALTER TABLE `assets` ADD `visionConfidence` int;--> statement-breakpoint
 ALTER TABLE `assets` ADD `reviewStatus` enum('pending','approved','needs_review') DEFAULT 'approved' NOT NULL;--> statement-breakpoint

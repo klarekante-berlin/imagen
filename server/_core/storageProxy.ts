@@ -1,4 +1,5 @@
 import type { Express } from "express";
+import { storageReadLocal } from "../storage";
 import { ENV } from "./env";
 
 export function registerStorageProxy(app: Express) {
@@ -6,6 +7,18 @@ export function registerStorageProxy(app: Express) {
     const key = (req.params as unknown as Record<string, string>)[0];
     if (!key) {
       res.status(400).send("Missing storage key");
+      return;
+    }
+
+    if (ENV.storageBackend === "local") {
+      const file = await storageReadLocal(key);
+      if (!file) {
+        res.status(404).send("Not found");
+        return;
+      }
+      res.set("Content-Type", file.contentType);
+      res.set("Cache-Control", "private, max-age=300");
+      res.send(file.buffer);
       return;
     }
 

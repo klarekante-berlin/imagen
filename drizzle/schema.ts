@@ -107,7 +107,7 @@ export const assets = mysqlTable(
     /** sha256 — dedup + idempotency */
     contentHash: varchar("contentHash", { length: 64 }),
     /** Original ingest path (e.g. klarekante-style/papa/foo.png) */
-    sourcePath: varchar("sourcePath", { length: 1024 }),
+    sourcePath: varchar("sourcePath", { length: 512 }),
     /** Audit: was this auto-categorized via vision? */
     autoCategorized: boolean("autoCategorized").notNull().default(false),
     /** Vision confidence 0-100 */
