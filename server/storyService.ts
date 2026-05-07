@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { Asset, ImageFormat } from "../drizzle/schema";
 import type {
   ConsistencyContext,
@@ -69,21 +68,6 @@ export function findSceneForSlide(
       (s) => slideNumber >= s.slideRange[0] && slideNumber <= s.slideRange[1],
     ) ?? ctx.scenes[0]
   );
-}
-
-export interface DetectedCharacter {
-  name: string;
-  role: string; // e.g. "Podcast-Host", "Politiker", "Kind"
-  suggestedAssetId: number | null;
-  confidence: "high" | "medium" | "low";
-}
-
-// ─── Anthropic Client ─────────────────────────────────────────────────────────
-
-function getAnthropicClient(): Anthropic {
-  const apiKey = ENV.anthropicApiKey || process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY not configured");
-  return new Anthropic({ apiKey });
 }
 
 // ─── Atlas Cloud Image Generation (gpt-image-2) ───────────────────────────────
@@ -247,67 +231,6 @@ async function atlasGenerateImage(params: {
 
   throw new Error(`Atlas Cloud: generation timed out after ${(MAX_POLLS * POLL_INTERVAL_MS) / 60000} minutes`);
 }
-
-// ─── Auto Character Detection ─────────────────────────────────────────────────
-
-/**
- * Uses Claude to detect characters in a script/theme and match them to assets.
- * Returns detected characters with suggested asset IDs.
- */
-export async function detectCharactersFromScript(
-  scriptOrTheme: string,
-  availableAssets: Asset[]
-): Promise<DetectedCharacter[]> {
-  const client = getAnthropicClient();
-
-  const assetList = availableAssets
-    .map((a) => `ID:${a.id} | "${a.name}" | Kategorie: ${a.category} | ${a.description || ""}`)
-    .join("\n");
-
-  const prompt = `Analysiere dieses Skript/Thema und erkenne alle Charaktere darin.
-Dann ordne jeden Charakter dem passendsten Asset aus der Liste zu.
-
-SKRIPT/THEMA:
-${scriptOrTheme}
-
-VERFÜGBARE ASSETS:
-${assetList}
-
-Antworte als JSON-Array ohne Markdown:
-[
-  {
-    "name": "Charaktername wie im Skript",
-    "role": "Rolle/Funktion (z.B. Podcast-Host, Politiker, Kind, Hund)",
-    "suggestedAssetId": <Asset-ID oder null wenn kein passendes Asset>,
-    "confidence": "high|medium|low"
-  }
-]
-
-Matching-Regeln:
-- "Toni" oder "Host" oder "Moderator" → suche nach dad/family/host Assets
-- Historische Persönlichkeiten (Scholz, Merkel, etc.) → historische-persoenlichkeit oder politiker Assets
-- Sportler → sport-athleten Assets
-- Musiker → musik-legenden oder moderne-popstars Assets
-- Kinder → the-boy oder lily oder girl Assets
-- Tiere → pug, cat, tiere Assets
-- Nur Charaktere die wirklich im Skript vorkommen, keine erfundenen`;
-
-  const response = await client.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 1000,
-    messages: [{ role: "user", content: prompt }],
-  });
-
-  const text = response.content[0].type === "text" ? response.content[0].text.trim() : "[]";
-  const cleaned = text.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
-
-  try {
-    return JSON.parse(cleaned) as DetectedCharacter[];
-  } catch {
-    return [];
-  }
-}
-
 
 // ─── Image Generation via Atlas Cloud (gpt-image-2) with Reference Images ────
 
