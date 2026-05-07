@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { Asset, AiModel, ImageFormat } from "../drizzle/schema";
 import { storagePut, storageReadLocal } from "./storage";
 import { ENV } from "./_core/env";
+import { prepareImageForAtlasRef } from "./_core/imagePrep";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -151,7 +152,10 @@ function getAnthropicClient(): Anthropic {
 // ─── Atlas Cloud Image Generation (gpt-image-2) ───────────────────────────────
 
 const ATLAS_BASE = "https://api.atlascloud.ai/api/v1";
-const ATLAS_MODEL = "openai/gpt-image-2/text-to-image";
+// text-to-image ignores reference_images. For ref-conditioned generation we
+// must hit the edit endpoint with `images` (plural).
+const ATLAS_MODEL_TEXT = "openai/gpt-image-2/text-to-image";
+const ATLAS_MODEL_EDIT = "openai/gpt-image-2/edit";
 
 /**
  * Project-wide visual DNA. Always prepended to every slide prompt so the
@@ -167,6 +171,53 @@ function getAtlasKey(): string {
   return key;
 }
 
+/**
+ * Upload an image buffer to Atlas Cloud and return the public download URL,
+ * which can then be used as a `images: [...]` entry on the edit endpoint.
+ * Atlas requires HTTP URLs there — data: URIs do NOT work.
+ */
+async function atlasUploadMedia(
+  buffer: Buffer,
+  mime: string,
+  fileName: string,
+): Promise<string> {
+  const key = getAtlasKey();
+  const blob = new Blob([buffer as unknown as BlobPart], { type: mime });
+  const form = new FormData();
+  form.set("file", blob, fileName);
+  const res = await fetch(`${ATLAS_BASE}/model/uploadMedia`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Atlas uploadMedia failed (${res.status}): ${err}`);
+  }
+  const json = (await res.json()) as { data?: { download_url?: string } };
+  const url = json.data?.download_url;
+  if (!url) throw new Error("Atlas uploadMedia: no download_url in response");
+  return url;
+}
+
+/**
+ * Convert any reference URL into something Atlas's edit endpoint accepts:
+ * - http(s) URL → passed through unchanged
+ * - data: URI → decoded, uploaded via uploadMedia, returns the resulting URL
+ */
+async function ensureAtlasUrl(refUrl: string, idx: number): Promise<string> {
+  if (refUrl.startsWith("http")) return refUrl;
+  if (!refUrl.startsWith("data:")) {
+    throw new Error(`unsupported ref URL scheme: ${refUrl.slice(0, 30)}`);
+  }
+  const match = /^data:([^;]+);base64,(.+)$/.exec(refUrl);
+  if (!match) throw new Error("malformed data: URI");
+  const mime = match[1];
+  const buffer = Buffer.from(match[2], "base64");
+  const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
+  return atlasUploadMedia(buffer, mime, `ref-${Date.now()}-${idx}.${ext}`);
+}
+
 async function atlasGenerateImage(params: {
   prompt: string;
   size: string;
@@ -175,8 +226,10 @@ async function atlasGenerateImage(params: {
 }): Promise<string> {
   const key = getAtlasKey();
 
+  const useEdit = !!params.referenceImageUrls && params.referenceImageUrls.length > 0;
+
   const body: Record<string, unknown> = {
-    model: ATLAS_MODEL,
+    model: useEdit ? ATLAS_MODEL_EDIT : ATLAS_MODEL_TEXT,
     prompt: params.prompt,
     size: params.size,
     quality: params.quality ?? "high",
@@ -185,9 +238,25 @@ async function atlasGenerateImage(params: {
     enable_sync_mode: false,
   };
 
-  // Pass reference images if provided (character sheets + style refs)
-  if (params.referenceImageUrls && params.referenceImageUrls.length > 0) {
-    body.reference_images = params.referenceImageUrls.slice(0, 4); // max 4
+  if (useEdit) {
+    const rawRefs = params.referenceImageUrls!.slice(0, 4); // max 4
+    // Atlas's edit endpoint only accepts HTTP(S) URLs in `images`. Any
+    // data: URIs (local-storage backend) must be uploaded via uploadMedia first.
+    const refs: string[] = [];
+    for (let i = 0; i < rawRefs.length; i++) {
+      try {
+        refs.push(await ensureAtlasUrl(rawRefs[i], i));
+      } catch (e) {
+        console.error(`[atlas] failed to resolve ref #${i}:`, e);
+      }
+    }
+    body.images = refs;
+    body.input_fidelity = "high"; // preserve details from input refs
+    console.log(
+      `[atlas] EDIT endpoint, ${refs.length}/${rawRefs.length} ref URLs: [${refs.map((u) => u.slice(0, 80)).join(", ")}]`,
+    );
+  } else {
+    console.log("[atlas] TEXT-TO-IMAGE endpoint, no refs");
   }
 
   // Step 1: Submit generation job
@@ -212,35 +281,39 @@ async function atlasGenerateImage(params: {
 
   const predictionId = submitData.data.id;
 
-  // Step 2: Poll for result (max 4 minutes, every 5 seconds)
+  // Step 2: Poll for result. Edit jobs can take 5-8 min; bumped to 10 min total.
   const pollUrl = `${ATLAS_BASE}/model/prediction/${predictionId}`;
-  for (let i = 0; i < 48; i++) {
-    await new Promise((r) => setTimeout(r, 5000));
+  const POLL_INTERVAL_MS = 5000;
+  const MAX_POLLS = 120; // 10 minutes
+  let lastStatus = "";
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
 
     const pollRes = await fetch(pollUrl, {
       headers: { Authorization: `Bearer ${key}` },
     });
-
     if (!pollRes.ok) continue;
 
-    const pollData = await pollRes.json() as {
+    const pollData = (await pollRes.json()) as {
       data?: { status: string; outputs?: string[]; error?: string };
     };
     const status = pollData.data?.status;
+    if (status && status !== lastStatus) {
+      console.log(`[atlas] prediction ${predictionId} status=${status} (${i * 5}s elapsed)`);
+      lastStatus = status;
+    }
 
     if (status === "completed") {
       const url = pollData.data?.outputs?.[0];
       if (!url) throw new Error("Atlas Cloud: completed but no output URL");
       return url;
     }
-
     if (status === "failed") {
       throw new Error(`Atlas Cloud generation failed: ${pollData.data?.error ?? "unknown"}`);
     }
-    // still processing – continue polling
   }
 
-  throw new Error("Atlas Cloud: generation timed out after 4 minutes");
+  throw new Error(`Atlas Cloud: generation timed out after ${(MAX_POLLS * POLL_INTERVAL_MS) / 60000} minutes`);
 }
 
 // ─── Auto Character Detection ─────────────────────────────────────────────────
@@ -656,7 +729,10 @@ export async function getPresignedStorageUrl(relativeOrAbsoluteUrl: string): Pro
   if (ENV.storageBackend === "local") {
     const file = await storageReadLocal(key);
     if (!file) return null;
-    return `data:${file.contentType};base64,${file.buffer.toString("base64")}`;
+    // Atlas's edit endpoint chokes on multi-MB JSON bodies. ALWAYS downscale
+    // to 1024px / JPEG q80 (typically 80–300KB), regardless of original size.
+    const prepared = await prepareImageForAtlasRef(file.buffer, file.contentType);
+    return `data:${prepared.mediaType};base64,${prepared.buffer.toString("base64")}`;
   }
 
   const forgeApiUrl = ENV.forgeApiUrl;

@@ -65,3 +65,42 @@ function pickMediaType(mime: string): PreparedImage["mediaType"] {
   if (mime === "image/gif") return "image/gif";
   return "image/png";
 }
+
+/**
+ * Prepare an image for Atlas Cloud reference_images / images parameter.
+ * Atlas chokes on multi-MB JSON bodies. Always downscale to ~1024px long edge
+ * and re-encode as JPEG q80 — typically 80–300KB per image, regardless of
+ * original size. Used for character/style refs.
+ */
+const ATLAS_REF_LONG_EDGE = 1024;
+const ATLAS_REF_TARGET_BYTES = 500_000;
+
+export async function prepareImageForAtlasRef(
+  input: Buffer,
+  declaredMime: string,
+): Promise<PreparedImage> {
+  void declaredMime; // we always re-encode as JPEG, mime is ignored
+  const originalBytes = input.byteLength;
+
+  let buf = await sharp(input)
+    .rotate()
+    .resize({ width: ATLAS_REF_LONG_EDGE, height: ATLAS_REF_LONG_EDGE, fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 80, mozjpeg: true })
+    .toBuffer();
+
+  if (buf.byteLength > ATLAS_REF_TARGET_BYTES) {
+    buf = await sharp(input)
+      .rotate()
+      .resize({ width: ATLAS_REF_LONG_EDGE, height: ATLAS_REF_LONG_EDGE, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 65, mozjpeg: true })
+      .toBuffer();
+  }
+
+  return {
+    buffer: buf,
+    mediaType: "image/jpeg",
+    resized: true,
+    originalBytes,
+    finalBytes: buf.byteLength,
+  };
+}
