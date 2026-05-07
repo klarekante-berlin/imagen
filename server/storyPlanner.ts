@@ -75,10 +75,6 @@ async function callClaudeWithRetry(
   throw lastError;
 }
 
-function stripCodeFences(text: string): string {
-  return text.trim().replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
-}
-
 // ─── scoreCharacterMatches ────────────────────────────────────────────────────
 
 /**
@@ -193,7 +189,51 @@ REGELN:
 - matchedCharacterId nur wenn ID in der Liste oben existiert
 - Bei needsWorldBuilding=true MUSS draftVisualDescription gesetzt sein
 - type: "character" für Personen/Tiere, "object" für Items, "place" für reine Orte
-`;
+
+Rufe das Tool plan_story mit den entsprechenden Werten auf.`;
+
+const PLAN_TOOL = {
+  name: "plan_story",
+  description: "Plane das Carousel: Slide-Count, Scenes (Locations), Detected Entities.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      title: { type: "string" },
+      suggestedSlideCount: { type: "integer", minimum: 3, maximum: 10 },
+      reasoning: { type: "string" },
+      scenes: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            slideRange: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 },
+            environment: { type: "string" },
+            environmentLockNotes: { type: "string" },
+            transitionToNext: { type: "string" },
+          },
+          required: ["id", "slideRange", "environment", "environmentLockNotes"],
+        },
+      },
+      detectedEntities: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            type: { type: "string", enum: ["character", "object", "place"] },
+            matchedCharacterId: { type: "integer" },
+            matchedAssetIds: { type: "array", items: { type: "integer" } },
+            needsWorldBuilding: { type: "boolean" },
+            draftVisualDescription: { type: "string" },
+          },
+          required: ["name", "type", "matchedAssetIds", "needsWorldBuilding"],
+        },
+      },
+    },
+    required: ["title", "suggestedSlideCount", "reasoning", "scenes", "detectedEntities"],
+  },
+};
 
 export async function planStory(input: PlanInput): Promise<StoryPlan> {
   const client = getAnthropicClient();
@@ -231,14 +271,29 @@ export async function planStory(input: PlanInput): Promise<StoryPlan> {
       model: claudeModel,
       max_tokens: 4000,
       system: PLAN_SYSTEM,
+      tools: [PLAN_TOOL],
+      tool_choice: { type: "tool", name: "plan_story" },
       messages: [{ role: "user", content: PLAN_USER_TEMPLATE(input.theme, characterList, assetList) }],
     },
     "planStory",
   );
 
-  const block = response.content[0];
-  if (block.type !== "text") throw new Error("planStory: unexpected response type");
-  const parsed = JSON.parse(stripCodeFences(block.text)) as StoryPlan;
+  const toolUse = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+  );
+  if (!toolUse) throw new Error("planStory: no tool_use block in response");
+
+  const raw = toolUse.input as StoryPlan;
+  const parsed: StoryPlan = {
+    title: raw.title,
+    suggestedSlideCount: raw.suggestedSlideCount,
+    reasoning: raw.reasoning,
+    scenes: raw.scenes.map((s) => ({
+      ...s,
+      slideRange: [s.slideRange[0], s.slideRange[1]] as [number, number],
+    })),
+    detectedEntities: raw.detectedEntities ?? [],
+  };
 
   validatePlan(parsed);
   return parsed;
@@ -331,30 +386,48 @@ ${characters
 
 Bildformat: ${imageFormat === "1:1" ? "quadratisch 1080x1080px" : "Hochformat 1080x1350px"}
 
-Erstelle ${plan.suggestedSlideCount} Slides. JSON-Struktur:
-{
-  "consistencyContext": {
-    "artStyle": "3D cartoon render, Pixar animation style, expressive faces, bold outlines, warm cinematic lighting, Mitchell's vs the Machines aesthetic",
-    "colorPalette": "Beschreibung passend zum Thema/Setting",
-    "globalStylePrompt": "Englischer Style-String max 100 Wörter — Rendering + Charaktere + Setting"
-  },
-  "slides": [
-    {
-      "slideNumber": 1,
-      "sceneId": "scene-1",
-      "textContent": "Großer Text der IM BILD erscheint, max 2-3 Sätze, Deutsch",
-      "caption": "Instagram-Caption 1-2 Sätze + Emojis",
-      "charactersInSlide": ["Namen aus characters[]"],
-      "imagePrompt": "Englischer Bildprompt: Szene + Charakter-Aktion + textContent als großer lesbarer Text-Overlay (bold, clear font, lower or upper third)"
-    }
-  ]
-}
+Erstelle EXAKT ${plan.suggestedSlideCount} Slides und rufe das Tool write_story_slides auf.
 
 REGELN:
 - EXAKT ${plan.suggestedSlideCount} Slides
 - Jeder Slide hat sceneId aus dem Plan (anhand slideRange zuordnen)
 - imagePrompt MUSS Outfit-Details der vorkommenden Charaktere enthalten
 - imagePrompt MUSS textContent als Text-Overlay-Anweisung enthalten`;
+
+const WRITE_TOOL = {
+  name: "write_story_slides",
+  description: "Schreibe die Slide-Texte und den Image-Prompt für jeden Slide basierend auf dem bestätigten Plan.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      consistencyContext: {
+        type: "object",
+        properties: {
+          artStyle: { type: "string" },
+          colorPalette: { type: "string" },
+          globalStylePrompt: { type: "string" },
+        },
+        required: ["artStyle", "colorPalette", "globalStylePrompt"],
+      },
+      slides: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            slideNumber: { type: "integer" },
+            sceneId: { type: "string" },
+            textContent: { type: "string" },
+            caption: { type: "string" },
+            charactersInSlide: { type: "array", items: { type: "string" } },
+            imagePrompt: { type: "string" },
+          },
+          required: ["slideNumber", "sceneId", "textContent", "caption", "charactersInSlide", "imagePrompt"],
+        },
+      },
+    },
+    required: ["consistencyContext", "slides"],
+  },
+};
 
 export async function writeStorySlides(input: WriteInput): Promise<{
   consistencyContext: ConsistencyContext;
@@ -369,6 +442,8 @@ export async function writeStorySlides(input: WriteInput): Promise<{
       model: claudeModel,
       max_tokens: 8000,
       system: WRITE_SYSTEM,
+      tools: [WRITE_TOOL],
+      tool_choice: { type: "tool", name: "write_story_slides" },
       messages: [
         {
           role: "user",
@@ -379,10 +454,12 @@ export async function writeStorySlides(input: WriteInput): Promise<{
     "writeStorySlides",
   );
 
-  const block = response.content[0];
-  if (block.type !== "text") throw new Error("writeStorySlides: unexpected response type");
+  const toolUse = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+  );
+  if (!toolUse) throw new Error("writeStorySlides: no tool_use block in response");
 
-  const parsed = JSON.parse(stripCodeFences(block.text)) as {
+  const parsed = toolUse.input as {
     consistencyContext: { artStyle: string; colorPalette: string; globalStylePrompt: string };
     slides: SlideContent[];
   };
