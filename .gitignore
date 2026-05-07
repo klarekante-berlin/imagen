@@ -111,3 +111,9 @@ temp/
 
 # Manus version file (auto-generated, not part of source)
 client/public/__manus__/version.json
+
+# graphify local artifacts
+graphify-out/
+
+# manus runtime logs
+.manus-logs/
