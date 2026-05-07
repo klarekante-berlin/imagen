@@ -46,6 +46,38 @@ vi.mock("./_core/visionCategorize", () => ({
   reviewStatusFromResult: vi.fn().mockReturnValue("needs_review"),
 }));
 
+vi.mock("./storyPlanner", () => ({
+  planStory: vi.fn().mockResolvedValue({
+    title: "Test Plan",
+    suggestedSlideCount: 6,
+    reasoning: "test reasoning",
+    scenes: [{ id: "scene-1", slideRange: [1, 6], environment: "Berlin", environmentLockNotes: "" }],
+    detectedEntities: [],
+  }),
+  writeStorySlides: vi.fn().mockResolvedValue({
+    consistencyContext: {
+      version: 2,
+      artStyle: "cartoon",
+      colorPalette: "warm",
+      scenes: [{ id: "scene-1", slideRange: [1, 6], environment: "Berlin", environmentLockNotes: "" }],
+      characters: [],
+      globalStylePrompt: "test",
+      styleReferenceUrls: [],
+      worldBuiltAssetIds: [],
+      slideCount: 6,
+    },
+    slides: Array.from({ length: 6 }, (_, i) => ({
+      slideNumber: i + 1,
+      sceneId: "scene-1",
+      textContent: `Slide ${i + 1}`,
+      caption: `Cap ${i + 1}`,
+      charactersInSlide: [],
+      imagePrompt: `Prompt ${i + 1}`,
+    })),
+  }),
+  scoreCharacterMatches: vi.fn().mockReturnValue([]),
+}));
+
 vi.mock("./storyService", () => ({
   generateStoryText: vi.fn().mockResolvedValue({
     title: "Test Story",
@@ -69,6 +101,7 @@ vi.mock("./storyService", () => ({
   generateSlideImageFreepik: vi.fn().mockResolvedValue({ imageKey: "test/key.png", imageUrl: "/manus-storage/test/key.png" }),
   getPresignedStorageUrl: vi.fn().mockResolvedValue(null),
   detectCharactersFromScript: vi.fn().mockResolvedValue([]),
+  normalizeConsistencyContext: vi.fn().mockImplementation((raw: unknown) => raw),
 }));
 
 vi.mock("./storage", () => ({
@@ -196,6 +229,36 @@ describe("stories router", () => {
     });
     expect(result.storyId).toBe(1);
     expect(result.title).toBe("Test Story");
+  });
+
+  it("plan returns proposed slide count and scenes", async () => {
+    const caller = appRouter.createCaller(createAuthContext());
+    const result = await caller.stories.plan({
+      theme: "Test",
+      model: "claude-sonnet-4-6",
+    });
+    expect(result.suggestedSlideCount).toBe(6);
+    expect(result.scenes).toHaveLength(1);
+    expect(result.title).toBe("Test Plan");
+  });
+
+  it("generate writes story from confirmed plan with variable count", async () => {
+    const caller = appRouter.createCaller(createAuthContext());
+    const result = await caller.stories.generate({
+      theme: "Test theme",
+      plan: {
+        title: "Test",
+        suggestedSlideCount: 6,
+        reasoning: "test",
+        scenes: [{ id: "scene-1", slideRange: [1, 6], environment: "Berlin", environmentLockNotes: "" }],
+        detectedEntities: [],
+      },
+      model: "claude-sonnet-4-6",
+      imageFormat: "1:1",
+      imageProvider: "gpt-image-2",
+    });
+    expect(result.storyId).toBe(1);
+    expect(result.title).toBe("Test");
   });
 });
 

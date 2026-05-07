@@ -151,21 +151,10 @@ export const stories = mysqlTable("stories", {
   imageProvider: mysqlEnum("imageProvider", IMAGE_PROVIDERS).default("gpt-image-2").notNull(),
   imageFormat: mysqlEnum("imageFormat", IMAGE_FORMATS).default("1:1").notNull(),
   /**
-   * Consistency context: locked outfits, environment, style for the whole story.
-   * Stored as JSON so the image prompts stay coherent across all 10 slides.
+   * Consistency context (JSON). Shape evolves over time — read through
+   * `normalizeConsistencyContext()` so legacy v1 payloads upgrade to v2.
    */
-  consistencyContext: json("consistencyContext").$type<{
-    artStyle: string;
-    colorPalette: string;
-    environment: string;
-    characters: Array<{
-      assetId: number;
-      name: string;
-      outfit: string;
-      visualDescription: string;
-    }>;
-    globalStylePrompt: string;
-  }>(),
+  consistencyContext: json("consistencyContext").$type<unknown>(),
   /** IDs of assets used in this story */
   usedAssetIds: json("usedAssetIds").$type<number[]>(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
