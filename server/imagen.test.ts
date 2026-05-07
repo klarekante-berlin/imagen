@@ -10,6 +10,15 @@ vi.mock("./db", () => ({
   createAsset: vi.fn().mockResolvedValue(1),
   updateAsset: vi.fn().mockResolvedValue(undefined),
   deleteAsset: vi.fn().mockResolvedValue(undefined),
+  getAssetByContentHash: vi.fn().mockResolvedValue(undefined),
+  getAssetBySourcePath: vi.fn().mockResolvedValue(undefined),
+  bulkApproveHighConfidence: vi.fn().mockResolvedValue(0),
+  getCharacters: vi.fn().mockResolvedValue([]),
+  getCharacterById: vi.fn().mockResolvedValue(undefined),
+  getCharacterByName: vi.fn().mockResolvedValue(undefined),
+  createCharacter: vi.fn().mockResolvedValue(1),
+  updateCharacter: vi.fn().mockResolvedValue(undefined),
+  resolveOrCreateCharacter: vi.fn().mockResolvedValue(null),
   getStories: vi.fn().mockResolvedValue([]),
   getStoryById: vi.fn().mockResolvedValue(undefined),
   createStory: vi.fn().mockResolvedValue(1),
@@ -22,6 +31,19 @@ vi.mock("./db", () => ({
   updateSlideByStoryAndNumber: vi.fn().mockResolvedValue(undefined),
   upsertUser: vi.fn().mockResolvedValue(undefined),
   getUserByOpenId: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("./_core/visionCategorize", () => ({
+  categorizeImage: vi.fn().mockResolvedValue({
+    suggestedCategory: "sonstiges",
+    categoryConfidence: 50,
+    suggestedCharacter: { matchType: "none", confidence: 50 },
+    isCharacterSheet: false,
+    visualDescription: "test",
+    tags: [],
+    needsHumanReview: true,
+  }),
+  reviewStatusFromResult: vi.fn().mockReturnValue("needs_review"),
 }));
 
 vi.mock("./storyService", () => ({
@@ -45,6 +67,8 @@ vi.mock("./storyService", () => ({
   }),
   generateSlideImage: vi.fn().mockResolvedValue({ imageKey: "test/key.png", imageUrl: "/manus-storage/test/key.png" }),
   generateSlideImageFreepik: vi.fn().mockResolvedValue({ imageKey: "test/key.png", imageUrl: "/manus-storage/test/key.png" }),
+  getPresignedStorageUrl: vi.fn().mockResolvedValue(null),
+  detectCharactersFromScript: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("./storage", () => ({

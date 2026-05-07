@@ -1,6 +1,10 @@
-import { eq, desc, and, inArray } from "drizzle-orm";
+import { eq, desc, and, inArray, gte, isNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users, assets, stories, slides, InsertAsset, InsertStory, InsertSlide, Asset, Story, Slide } from "../drizzle/schema";
+import {
+  InsertUser, users, assets, stories, slides, characters,
+  InsertAsset, InsertStory, InsertSlide, InsertCharacter,
+  Asset, Story, Slide, Character, ReviewStatus,
+} from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -61,13 +65,60 @@ export async function createAsset(data: InsertAsset): Promise<number> {
   return (result[0] as { insertId: number }).insertId;
 }
 
-export async function getAssets(category?: string): Promise<Asset[]> {
+export interface AssetFilter {
+  category?: string;
+  characterId?: number | null;
+  reviewStatus?: ReviewStatus;
+}
+
+export async function getAssets(filter?: string | AssetFilter): Promise<Asset[]> {
   const db = await getDb();
   if (!db) return [];
-  if (category && category !== "all") {
-    return db.select().from(assets).where(eq(assets.category, category as Asset["category"])).orderBy(desc(assets.createdAt));
+  const f: AssetFilter = typeof filter === "string" ? { category: filter } : filter ?? {};
+  const conds = [];
+  if (f.category && f.category !== "all") {
+    conds.push(eq(assets.category, f.category as Asset["category"]));
   }
-  return db.select().from(assets).orderBy(desc(assets.createdAt));
+  if (f.characterId === null) {
+    conds.push(isNull(assets.characterId));
+  } else if (typeof f.characterId === "number") {
+    conds.push(eq(assets.characterId, f.characterId));
+  }
+  if (f.reviewStatus) {
+    conds.push(eq(assets.reviewStatus, f.reviewStatus));
+  }
+  const query = db.select().from(assets).orderBy(desc(assets.createdAt));
+  if (conds.length === 0) return query;
+  return query.where(conds.length === 1 ? conds[0] : and(...conds)) as unknown as Promise<Asset[]>;
+}
+
+export async function getAssetByContentHash(hash: string): Promise<Asset | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(assets).where(eq(assets.contentHash, hash)).limit(1);
+  return result[0];
+}
+
+export async function getAssetBySourcePath(path: string): Promise<Asset | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(assets).where(eq(assets.sourcePath, path)).limit(1);
+  return result[0];
+}
+
+export async function bulkApproveHighConfidence(minConfidence: number): Promise<number> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db
+    .update(assets)
+    .set({ reviewStatus: "approved" })
+    .where(
+      and(
+        eq(assets.reviewStatus, "needs_review"),
+        gte(assets.visionConfidence, minConfidence)
+      )
+    );
+  return (result[0] as { affectedRows: number }).affectedRows ?? 0;
 }
 
 export async function getAssetById(id: number): Promise<Asset | undefined> {
@@ -94,6 +145,67 @@ export async function deleteAsset(id: number): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await db.delete(assets).where(eq(assets.id, id));
+}
+
+// ─── Characters ───────────────────────────────────────────────────────────────
+
+export async function createCharacter(data: InsertCharacter): Promise<number> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(characters).values(data);
+  return (result[0] as { insertId: number }).insertId;
+}
+
+export async function getCharacters(): Promise<Character[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(characters).orderBy(characters.name);
+}
+
+export async function getCharacterById(id: number): Promise<Character | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(characters).where(eq(characters.id, id)).limit(1);
+  return result[0];
+}
+
+export async function getCharacterByName(name: string): Promise<Character | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(characters).where(eq(characters.name, name)).limit(1);
+  return result[0];
+}
+
+export async function updateCharacter(id: number, data: Partial<InsertCharacter>): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(characters).set(data).where(eq(characters.id, id));
+}
+
+export type CharacterSuggestionInput =
+  | { matchType: "existing"; characterId: number }
+  | { matchType: "new"; name: string; aliases: string[]; kind: Character["kind"]; defaultDescription?: string }
+  | { matchType: "none" };
+
+/**
+ * Returns characterId for the suggestion: looks up existing, inserts new, or returns null.
+ * For "new" suggestions, dedupes by name (case-sensitive — the unique index handles it).
+ */
+export async function resolveOrCreateCharacter(
+  suggestion: CharacterSuggestionInput
+): Promise<number | null> {
+  if (suggestion.matchType === "none") return null;
+  if (suggestion.matchType === "existing") return suggestion.characterId;
+
+  const existing = await getCharacterByName(suggestion.name);
+  if (existing) return existing.id;
+
+  return createCharacter({
+    name: suggestion.name,
+    aliases: suggestion.aliases,
+    kind: suggestion.kind,
+    defaultDescription: suggestion.defaultDescription ?? null,
+  });
 }
 
 // ─── Stories ──────────────────────────────────────────────────────────────────

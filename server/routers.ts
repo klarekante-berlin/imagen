@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -5,24 +6,44 @@ import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import {
   createAsset, getAssets, getAssetById, getAssetsByIds, updateAsset, deleteAsset,
+  getAssetByContentHash, bulkApproveHighConfidence,
   createStory, getStories, getStoryById, updateStory, deleteStory,
   createSlides, getSlidesByStoryId, getSlideById, updateSlide, updateSlideByStoryAndNumber,
+  getCharacters, getCharacterById, updateCharacter, resolveOrCreateCharacter,
 } from "./db";
 import { storagePut } from "./storage";
 import {
   generateStoryText, generateSlideImage, generateSlideImageFreepik,
   ConsistencyContext, detectCharactersFromScript, getPresignedStorageUrl,
 } from "./storyService";
-import { ASSET_CATEGORIES } from "../drizzle/schema";
+import {
+  categorizeImage, reviewStatusFromResult,
+  type CategorizeResult, type KnownCharacter,
+} from "./_core/visionCategorize";
+import {
+  ASSET_CATEGORIES, CHARACTER_KINDS, REVIEW_STATUSES,
+} from "../drizzle/schema";
 import type { TRPCError } from "@trpc/server";
 
 // ─── Asset Router ─────────────────────────────────────────────────────────────
 
 const assetRouter = router({
   list: publicProcedure
-    .input(z.object({ category: z.string().optional() }))
+    .input(
+      z
+        .object({
+          category: z.string().optional(),
+          characterId: z.number().nullable().optional(),
+          reviewStatus: z.enum(REVIEW_STATUSES).optional(),
+        })
+        .optional()
+    )
     .query(async ({ input }) => {
-      return getAssets(input.category);
+      return getAssets({
+        category: input?.category,
+        characterId: input?.characterId,
+        reviewStatus: input?.reviewStatus,
+      });
     }),
 
   get: publicProcedure
@@ -34,31 +55,94 @@ const assetRouter = router({
   upload: protectedProcedure
     .input(z.object({
       name: z.string().min(1),
-      category: z.enum(ASSET_CATEGORIES),
+      category: z.enum(ASSET_CATEGORIES).optional(),
+      autoCategorize: z.boolean().default(true),
       description: z.string().optional(),
       visualDescription: z.string().optional(),
       tags: z.array(z.string()).optional(),
-      // Base64 encoded image data
       imageData: z.string(),
       mimeType: z.string().default("image/png"),
       fileName: z.string().default("asset.png"),
     }))
     .mutation(async ({ input }) => {
       const buffer = Buffer.from(input.imageData, "base64");
-      const key = `assets/${input.category}/${Date.now()}-${input.fileName}`;
-      const { url } = await storagePut(key, buffer, input.mimeType);
+      const contentHash = createHash("sha256").update(buffer).digest("hex");
+
+      const existing = await getAssetByContentHash(contentHash);
+      if (existing) {
+        return {
+          id: existing.id,
+          imageKey: existing.imageKey,
+          imageUrl: existing.imageUrl,
+          deduplicated: true as const,
+          vision: null,
+        };
+      }
+
+      let category = input.category ?? "sonstiges";
+      let visionResult: CategorizeResult | null = null;
+      let characterId: number | null = null;
+
+      const tmpKey = `assets/${input.category ?? "uploads"}/${Date.now()}-${input.fileName}`;
+      const { url, key } = await storagePut(tmpKey, buffer, input.mimeType);
+
+      if (input.autoCategorize) {
+        try {
+          const knownChars = await getCharacters();
+          const known: KnownCharacter[] = knownChars.map((c) => ({
+            id: c.id,
+            name: c.name,
+            aliases: c.aliases ?? [],
+            kind: c.kind,
+          }));
+          const presigned = await getPresignedStorageUrl(url);
+          const source = presigned
+            ? ({ type: "url" as const, url: presigned })
+            : ({ type: "base64" as const, mediaType: input.mimeType, data: input.imageData });
+          visionResult = await categorizeImage(source, known);
+          if (!input.category) category = visionResult.suggestedCategory;
+          characterId = await resolveOrCreateCharacter(visionResult.suggestedCharacter);
+        } catch (e) {
+          console.error("[assets.upload] vision categorize failed:", e);
+        }
+      }
 
       const id = await createAsset({
         name: input.name,
-        category: input.category,
-        description: input.description,
-        visualDescription: input.visualDescription,
-        tags: input.tags,
+        category,
+        description: input.description ?? null,
+        visualDescription: input.visualDescription ?? visionResult?.visualDescription ?? null,
+        tags: input.tags ?? visionResult?.tags ?? null,
         imageKey: key,
         imageUrl: url,
+        characterId,
+        isCharacterSheet: visionResult?.isCharacterSheet ?? false,
+        pose: visionResult?.pose ?? null,
+        outfit: visionResult?.outfit ?? null,
+        setting: visionResult?.setting ?? null,
+        mood: visionResult?.mood ?? null,
+        dominantColors: visionResult?.dominantColors ?? null,
+        contentHash,
+        autoCategorized: !!visionResult,
+        visionConfidence: visionResult?.categoryConfidence ?? null,
+        reviewStatus: visionResult ? reviewStatusFromResult(visionResult) : "approved",
       });
 
-      return { id, imageKey: key, imageUrl: url };
+      // Set primaryAssetId on character if this is its first sheet
+      if (characterId && visionResult?.isCharacterSheet) {
+        const ch = await getCharacterById(characterId);
+        if (ch && !ch.primaryAssetId) {
+          await updateCharacter(characterId, { primaryAssetId: id });
+        }
+      }
+
+      return {
+        id,
+        imageKey: key,
+        imageUrl: url,
+        deduplicated: false as const,
+        vision: visionResult,
+      };
     }),
 
   update: protectedProcedure
@@ -76,6 +160,27 @@ const assetRouter = router({
       return { success: true };
     }),
 
+  approveCategory: protectedProcedure
+    .input(z.object({
+      id: z.number(),
+      category: z.enum(ASSET_CATEGORIES).optional(),
+      characterId: z.number().nullable().optional(),
+      visualDescription: z.string().optional(),
+      isCharacterSheet: z.boolean().optional(),
+    }))
+    .mutation(async ({ input }) => {
+      const { id, ...data } = input;
+      await updateAsset(id, { ...data, reviewStatus: "approved" });
+      return { success: true };
+    }),
+
+  bulkApprove: protectedProcedure
+    .input(z.object({ minConfidence: z.number().min(0).max(100).default(80) }))
+    .mutation(async ({ input }) => {
+      const approved = await bulkApproveHighConfidence(input.minConfidence);
+      return { approved };
+    }),
+
   delete: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ input }) => {
@@ -84,6 +189,31 @@ const assetRouter = router({
     }),
 
   categories: publicProcedure.query(() => ASSET_CATEGORIES),
+});
+
+// ─── Character Router ─────────────────────────────────────────────────────────
+
+const characterRouter = router({
+  list: publicProcedure.query(async () => getCharacters()),
+  get: publicProcedure
+    .input(z.object({ id: z.number() }))
+    .query(async ({ input }) => getCharacterById(input.id)),
+  kinds: publicProcedure.query(() => CHARACTER_KINDS),
+  update: protectedProcedure
+    .input(z.object({
+      id: z.number(),
+      name: z.string().optional(),
+      aliases: z.array(z.string()).optional(),
+      kind: z.enum(CHARACTER_KINDS).optional(),
+      defaultDescription: z.string().optional(),
+      defaultStyleNotes: z.string().optional(),
+      primaryAssetId: z.number().nullable().optional(),
+    }))
+    .mutation(async ({ input }) => {
+      const { id, ...data } = input;
+      await updateCharacter(id, data);
+      return { success: true };
+    }),
 });
 
 // ─── Detect Characters Router ───────────────────────────────────────────────
@@ -402,6 +532,7 @@ export const appRouter = router({
     }),
   }),
   assets: assetRouter,
+  characters: characterRouter,
   stories: storyRouter,
   generate: generateRouter,
   export: exportRouter,
