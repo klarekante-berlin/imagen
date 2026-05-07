@@ -127,7 +127,20 @@ export default function StoryDetail() {
   const allComplete = completedSlides === slides.length && slides.length > 0;
   const isGenerating = story.status === "generating_images" || generateImages.isPending;
   const currentSlide = slides[activeSlide];
-  const ctx = story.consistencyContext as { artStyle?: string; colorPalette?: string; environment?: string; characters?: Array<{ name: string; outfit: string }> } | null;
+  const rawCtx = story.consistencyContext as
+    | { artStyle?: string; colorPalette?: string; environment?: string; scenes?: Array<{ environment?: string; slideRange?: [number, number] }>; characters?: Array<{ name: string; outfit: string }>; slideCount?: number; version?: number }
+    | null;
+  const ctx = rawCtx
+    ? {
+        artStyle: rawCtx.artStyle,
+        colorPalette: rawCtx.colorPalette,
+        // v2 stores env per scene; show first scene as headline
+        environment: rawCtx.environment ?? rawCtx.scenes?.[0]?.environment ?? "",
+        characters: rawCtx.characters,
+        slideCount: rawCtx.slideCount,
+        scenes: rawCtx.scenes,
+      }
+    : null;
 
   const storyStatus = STATUS_CONFIG[story.status as keyof typeof STATUS_CONFIG] || STATUS_CONFIG.draft;
 

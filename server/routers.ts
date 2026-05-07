@@ -14,8 +14,11 @@ import {
 import { storagePut } from "./storage";
 import {
   generateStoryText, generateSlideImage, generateSlideImageFreepik,
-  ConsistencyContext, detectCharactersFromScript, getPresignedStorageUrl,
+  ConsistencyContext, ConsistencyCharacterRef,
+  detectCharactersFromScript, getPresignedStorageUrl,
+  normalizeConsistencyContext,
 } from "./storyService";
+import { planStory, writeStorySlides, type StoryPlan, type DetectedEntity } from "./storyPlanner";
 import {
   categorizeImage, reviewStatusFromResult,
   type CategorizeResult, type KnownCharacter,
@@ -266,6 +269,173 @@ const storyRouter = router({
       return { ...story, slides: storySlides };
     }),
 
+  /** Stage 1 — return a StoryPlan for the UI to confirm. No DB write. */
+  plan: protectedProcedure
+    .input(z.object({
+      theme: z.string().min(1),
+      model: z.enum(["claude-sonnet-4-6", "claude-opus-4-5"]).default("claude-sonnet-4-6"),
+    }))
+    .mutation(async ({ input }) => {
+      const characterLibrary = await getCharacters();
+      const assetCatalog = await getAssets();
+      const plan = await planStory({
+        theme: input.theme,
+        model: input.model,
+        characterLibrary: characterLibrary.map((c) => ({
+          id: c.id,
+          name: c.name,
+          aliases: c.aliases,
+          kind: c.kind,
+          defaultDescription: c.defaultDescription,
+        })),
+        assetCatalog,
+      });
+
+      // Enrich detectedEntities with full character info for the UI
+      const enrichedEntities = await Promise.all(
+        plan.detectedEntities.map(async (e) => {
+          if (!e.matchedCharacterId) return { ...e, character: null };
+          const ch = await getCharacterById(e.matchedCharacterId);
+          return { ...e, character: ch ?? null };
+        }),
+      );
+
+      return { ...plan, detectedEntities: enrichedEntities };
+    }),
+
+  /** Stage 3 — write slides + persist story using the user-confirmed plan. */
+  generate: protectedProcedure
+    .input(z.object({
+      theme: z.string().min(1),
+      plan: z.object({
+        title: z.string(),
+        suggestedSlideCount: z.number().int().min(3).max(10),
+        reasoning: z.string(),
+        scenes: z.array(z.object({
+          id: z.string(),
+          slideRange: z.tuple([z.number().int(), z.number().int()]),
+          environment: z.string(),
+          environmentLockNotes: z.string(),
+          transitionToNext: z.string().optional(),
+          environmentRefAssetId: z.number().optional(),
+        })),
+        detectedEntities: z.array(z.object({
+          name: z.string(),
+          type: z.enum(["character", "object", "place"]),
+          matchedCharacterId: z.number().optional(),
+          matchedAssetIds: z.array(z.number()).default([]),
+          needsWorldBuilding: z.boolean(),
+          draftVisualDescription: z.string().optional().nullable(),
+        })),
+      }),
+      selectedAssetIdsByEntity: z.record(z.string(), z.number().nullable()).optional(),
+      model: z.enum(["claude-sonnet-4-6", "claude-opus-4-5"]).default("claude-sonnet-4-6"),
+      imageFormat: z.enum(["1:1", "4:5"]).default("1:1"),
+      imageProvider: z.enum(["gpt-image-2", "freepik"]).default("gpt-image-2"),
+    }))
+    .mutation(async ({ input }) => {
+      const plan = input.plan as StoryPlan;
+
+      // Resolve characters: user override → matched character → skip
+      const resolvedCharacters: ConsistencyCharacterRef[] = [];
+      const usedAssetIds: number[] = [];
+      const overrides = input.selectedAssetIdsByEntity ?? {};
+
+      for (const entity of plan.detectedEntities) {
+        if (entity.type !== "character") continue;
+        const overrideAssetId = overrides[entity.name];
+        let assetId: number | null = null;
+        let characterId = 0;
+        let visualDescription = entity.draftVisualDescription ?? "";
+        let name = entity.name;
+
+        if (overrideAssetId !== undefined && overrideAssetId !== null) {
+          assetId = overrideAssetId;
+          const a = await getAssetById(overrideAssetId);
+          if (a?.characterId) characterId = a.characterId;
+          if (a?.visualDescription) visualDescription = a.visualDescription;
+          if (a?.name) name = a.name;
+        } else if (entity.matchedCharacterId) {
+          const ch = await getCharacterById(entity.matchedCharacterId);
+          if (ch) {
+            characterId = ch.id;
+            name = ch.name;
+            if (ch.defaultDescription) visualDescription = ch.defaultDescription;
+            if (ch.primaryAssetId) {
+              assetId = ch.primaryAssetId;
+              const a = await getAssetById(ch.primaryAssetId);
+              if (a?.visualDescription && !visualDescription) visualDescription = a.visualDescription;
+            }
+          }
+        }
+
+        // Resolve presigned URL if we have an assetId
+        let referenceImageUrl: string | undefined;
+        if (assetId) {
+          const a = await getAssetById(assetId);
+          if (a?.imageUrl) {
+            const presigned = await getPresignedStorageUrl(a.imageUrl);
+            referenceImageUrl = presigned ?? a.imageUrl;
+          }
+          usedAssetIds.push(assetId);
+        }
+
+        resolvedCharacters.push({
+          characterId,
+          assetId: assetId ?? 0,
+          name,
+          outfit: "",
+          visualDescription,
+          referenceImageUrl,
+          worldBuilt: false,
+        });
+      }
+
+      // Style references
+      const allAssets = await getAssets();
+      const styleAssets = allAssets.filter((a) => a.category === "stil-referenz").slice(0, 2);
+      const styleReferenceUrls = (
+        await Promise.all(styleAssets.map((a) => getPresignedStorageUrl(a.imageUrl)))
+      ).filter((u): u is string => !!u);
+      for (const a of styleAssets) usedAssetIds.push(a.id);
+
+      const { consistencyContext, slides } = await writeStorySlides({
+        theme: input.theme,
+        plan,
+        resolvedCharacters,
+        styleReferenceUrls,
+        model: input.model,
+        imageFormat: input.imageFormat,
+      });
+
+      const storyId = await createStory({
+        title: plan.title,
+        theme: input.theme,
+        status: "draft",
+        model: input.model,
+        imageProvider: input.imageProvider,
+        imageFormat: input.imageFormat,
+        consistencyContext,
+        usedAssetIds: Array.from(new Set(usedAssetIds)),
+      });
+
+      await createSlides(storyId, plan.suggestedSlideCount);
+
+      for (const slide of slides) {
+        await updateSlideByStoryAndNumber(storyId, slide.slideNumber, {
+          textContent: slide.textContent,
+          caption: slide.caption,
+          charactersInSlide: slide.charactersInSlide,
+          imagePrompt: slide.imagePrompt,
+          status: "pending",
+        });
+      }
+
+      await updateStory(storyId, { status: "draft" });
+      return { storyId, title: plan.title };
+    }),
+
+  /** @deprecated Use stories.plan + stories.generate. Kept for backcompat. */
   create: protectedProcedure
     .input(z.object({
       theme: z.string().min(1),
@@ -372,7 +542,8 @@ const generateRouter = router({
       const storySlides = await getSlidesByStoryId(input.storyId);
       await updateStory(input.storyId, { status: "generating_images" });
 
-      const ctx = story.consistencyContext as ConsistencyContext;
+      const ctx = normalizeConsistencyContext(story.consistencyContext);
+      if (!ctx) throw new Error("Story has invalid consistency context");
 
       // Get all used assets with their image URLs for reference
       const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
@@ -453,7 +624,8 @@ const generateRouter = router({
       const story = await getStoryById(slide.storyId);
       if (!story || !story.consistencyContext) throw new Error("Story not found");
 
-      const ctx = story.consistencyContext as ConsistencyContext;
+      const ctx = normalizeConsistencyContext(story.consistencyContext);
+      if (!ctx) throw new Error("Story has invalid consistency context");
       const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
 
        // Build character reference map with presigned absolute URLs for Atlas Cloud

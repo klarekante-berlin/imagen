@@ -5,7 +5,8 @@ import { ENV } from "./_core/env";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface ConsistencyContext {
+/** Legacy v1 shape — single environment, fixed 10 slides. Kept for backcompat reads. */
+export interface ConsistencyContextV1 {
   artStyle: string;
   colorPalette: string;
   environment: string;
@@ -14,11 +15,46 @@ export interface ConsistencyContext {
     name: string;
     outfit: string;
     visualDescription: string;
-    referenceImageUrl?: string; // URL of the character sheet for reference
+    referenceImageUrl?: string;
   }>;
   globalStylePrompt: string;
-  styleReferenceUrls?: string[]; // Style reference images (e.g. Mitchells)
+  styleReferenceUrls?: string[];
 }
+
+/** Multi-scene story v2. */
+export interface Scene {
+  id: string;                     // "scene-1" — stable across regenerates
+  slideRange: [number, number];   // 1-indexed inclusive
+  environment: string;            // location description
+  environmentLockNotes: string;   // "same window, same coffee mug"
+  transitionToNext?: string;      // bridge text on the last slide of this scene
+  environmentRefAssetId?: number; // Phase-3: world-built env reference
+}
+
+export interface ConsistencyCharacterRef {
+  characterId: number;            // FK to characters.id (0 = pre-v2 legacy)
+  assetId: number;                // primary sheet
+  name: string;
+  outfit: string;
+  visualDescription: string;
+  referenceImageUrl?: string;
+  worldBuilt?: boolean;
+}
+
+export interface ConsistencyContextV2 {
+  version: 2;
+  artStyle: string;
+  colorPalette: string;
+  scenes: Scene[];
+  characters: ConsistencyCharacterRef[];
+  globalStylePrompt: string;
+  styleReferenceUrls?: string[];
+  worldBuiltAssetIds: number[];
+  slideCount: number;             // 3..10
+}
+
+/** Default export is v2. v1 kept under an explicit alias. */
+export type ConsistencyContext = ConsistencyContextV2;
 
 export interface SlideContent {
   slideNumber: number;
@@ -26,6 +62,7 @@ export interface SlideContent {
   caption: string;
   charactersInSlide: string[];
   imagePrompt: string;
+  sceneId?: string;
 }
 
 export interface StoryContent {
@@ -33,6 +70,67 @@ export interface StoryContent {
   consistencyContext: ConsistencyContext;
   slides: SlideContent[];
   usedAssetIds: number[];
+}
+
+// ─── V1 → V2 normalize ────────────────────────────────────────────────────────
+
+/**
+ * Read-time adapter. v1 stories on disk get wrapped in a single all-encompassing
+ * scene so callers only ever deal with v2.
+ */
+export function normalizeConsistencyContext(
+  raw: unknown,
+): ConsistencyContext | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Partial<ConsistencyContextV2 & ConsistencyContextV1>;
+
+  if (r.version === 2 && Array.isArray(r.scenes)) {
+    return r as ConsistencyContextV2;
+  }
+
+  // v1 → v2
+  const characters = Array.isArray(r.characters)
+    ? r.characters.map((c) => ({
+        characterId: 0,
+        assetId: c.assetId,
+        name: c.name,
+        outfit: c.outfit,
+        visualDescription: c.visualDescription,
+        referenceImageUrl: c.referenceImageUrl,
+        worldBuilt: false,
+      }))
+    : [];
+
+  return {
+    version: 2,
+    artStyle: r.artStyle ?? "",
+    colorPalette: r.colorPalette ?? "",
+    scenes: [
+      {
+        id: "scene-1",
+        slideRange: [1, 10],
+        environment: (r as ConsistencyContextV1).environment ?? "",
+        environmentLockNotes: "",
+      },
+    ],
+    characters,
+    globalStylePrompt: r.globalStylePrompt ?? "",
+    styleReferenceUrls: r.styleReferenceUrls,
+    worldBuiltAssetIds: [],
+    slideCount: 10,
+  };
+}
+
+/** Find the scene containing a given slide number. Falls back to the first scene. */
+export function findSceneForSlide(
+  ctx: ConsistencyContext,
+  slideNumber: number,
+): Scene {
+  return (
+    ctx.scenes.find(
+      (s) => slideNumber >= s.slideRange[0] && slideNumber <= s.slideRange[1],
+    ) ?? ctx.scenes[0]
+  );
 }
 
 export interface DetectedCharacter {
@@ -319,9 +417,13 @@ WICHTIG:
         jsonText = jsonText.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
       }
 
-      const parsed = JSON.parse(jsonText) as StoryContent;
+      const parsed = JSON.parse(jsonText) as {
+        title: string;
+        consistencyContext: ConsistencyContextV1 | ConsistencyContextV2;
+        slides: SlideContent[];
+        usedAssetIds: number[];
+      };
 
-      // Validate structure
       if (
         !parsed.title ||
         !parsed.consistencyContext ||
@@ -333,7 +435,15 @@ WICHTIG:
         );
       }
 
-      return parsed;
+      const normalized = normalizeConsistencyContext(parsed.consistencyContext);
+      if (!normalized) throw new Error("Failed to normalize consistencyContext");
+
+      return {
+        title: parsed.title,
+        consistencyContext: normalized,
+        slides: parsed.slides,
+        usedAssetIds: parsed.usedAssetIds,
+      };
     } catch (err: unknown) {
       lastError = err instanceof Error ? err : new Error(String(err));
       const isOverloaded =
@@ -361,13 +471,23 @@ export async function generateSlideImage(
   styleReferenceUrls: string[] = []      // Global style reference URLs
 ): Promise<{ imageKey: string; imageUrl: string }> {
 
+  const scene = findSceneForSlide(consistencyContext, slideNumber);
+  const totalSlides = consistencyContext.slideCount;
+  const sceneIdx = consistencyContext.scenes.findIndex((s) => s.id === scene.id);
+  const nextScene = consistencyContext.scenes[sceneIdx + 1];
+  const isLastOfScene = slideNumber === scene.slideRange[1];
+
   // Build the full prompt with text overlay instruction
   const fullPrompt = [
     consistencyContext.globalStylePrompt,
+    `Setting: ${scene.environment}.`,
+    scene.environmentLockNotes ? `Lock: ${scene.environmentLockNotes}.` : null,
+    isLastOfScene && nextScene && scene.transitionToNext
+      ? `Transition cue: ${scene.transitionToNext} (next scene: ${nextScene.environment}).`
+      : null,
     slidePrompt,
-    `Setting: ${consistencyContext.environment}.`,
     `Art style: ${consistencyContext.artStyle}.`,
-    `Slide ${slideNumber} of 10.`,
+    `Slide ${slideNumber} of ${totalSlides}.`,
     "High quality 3D render, cinematic composition, sharp details.",
     "Text must be large, bold, clearly readable, positioned in the lower or upper third of the image.",
   ]
