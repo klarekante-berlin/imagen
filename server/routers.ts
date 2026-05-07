@@ -20,6 +20,7 @@ import {
   categorizeImage, reviewStatusFromResult,
   type CategorizeResult, type KnownCharacter,
 } from "./_core/visionCategorize";
+import { prepareImageForVision } from "./_core/imagePrep";
 import {
   ASSET_CATEGORIES, CHARACTER_KINDS, REVIEW_STATUSES,
 } from "../drizzle/schema";
@@ -96,9 +97,17 @@ const assetRouter = router({
             kind: c.kind,
           }));
           const presigned = await getPresignedStorageUrl(url);
-          const source = presigned
-            ? ({ type: "url" as const, url: presigned })
-            : ({ type: "base64" as const, mediaType: input.mimeType, data: input.imageData });
+          let source;
+          if (presigned) {
+            source = { type: "url" as const, url: presigned };
+          } else {
+            const prepared = await prepareImageForVision(buffer, input.mimeType);
+            source = {
+              type: "base64" as const,
+              mediaType: prepared.mediaType,
+              data: prepared.buffer.toString("base64"),
+            };
+          }
           visionResult = await categorizeImage(source, known);
           if (!input.category) category = visionResult.suggestedCategory;
           characterId = await resolveOrCreateCharacter(visionResult.suggestedCharacter);

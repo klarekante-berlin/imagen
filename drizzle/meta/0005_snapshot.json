@@ -1,7 +1,7 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "65ea13d9-7e0a-40aa-9eae-946130ac3b0f",
+  "id": "36791932-dd1e-401f-a883-cce3cb94b7ad",
   "prevId": "f41394f8-42c5-4f5a-9e08-c4da35923fa2",
   "tables": {
     "assets": {
@@ -123,7 +123,7 @@
         },
         "sourcePath": {
           "name": "sourcePath",
-          "type": "varchar(1024)",
+          "type": "varchar(512)",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false

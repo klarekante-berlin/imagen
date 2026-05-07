@@ -24,6 +24,7 @@ import {
   type CategorizeResult,
   type KnownCharacter,
 } from "../server/_core/visionCategorize";
+import { prepareImageForVision } from "../server/_core/imagePrep";
 import {
   createAsset,
   getCharacters,
@@ -190,9 +191,17 @@ async function importOne(
       : await storagePut(storageKey, buffer, mime);
 
     const presigned = args.dryRun ? null : await getPresignedStorageUrl(url);
-    const visionSource = presigned
-      ? ({ type: "url" as const, url: presigned })
-      : ({ type: "base64" as const, mediaType: mime, data: buffer.toString("base64") });
+    let visionSource;
+    if (presigned) {
+      visionSource = { type: "url" as const, url: presigned };
+    } else {
+      const prepared = await prepareImageForVision(buffer, mime);
+      visionSource = {
+        type: "base64" as const,
+        mediaType: prepared.mediaType,
+        data: prepared.buffer.toString("base64"),
+      };
+    }
 
     const categorizeHint: CategorizeHint = {
       folderName,
@@ -357,7 +366,9 @@ async function main() {
   if (err > 0) console.log(`[import] errors logged to ${ERROR_LOG}`);
 }
 
-main().catch((e) => {
-  console.error("[import] fatal:", e);
-  process.exit(1);
-});
+main()
+  .then(() => process.exit(0))
+  .catch((e) => {
+    console.error("[import] fatal:", e);
+    process.exit(1);
+  });
