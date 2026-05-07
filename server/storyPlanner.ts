@@ -18,6 +18,10 @@ export interface PlanInput {
   model: AiModel;
   characterLibrary: Pick<Character, "id" | "name" | "aliases" | "kind" | "defaultDescription">[];
   assetCatalog: Asset[];
+  /** If set, replaces PLAN_SYSTEM. Power-user override. */
+  customSystemPrompt?: string;
+  /** If set, prepended (with newline) before the auto-generated user template. */
+  customUserPromptPrefix?: string;
 }
 
 export interface WriteInput {
@@ -27,6 +31,10 @@ export interface WriteInput {
   styleReferenceUrls?: string[];
   model: AiModel;
   imageFormat: ImageFormat;
+  /** If set, replaces WRITE_SYSTEM. Power-user override. */
+  customSystemPrompt?: string;
+  /** If set, prepended (with newline) before the auto-generated user template. */
+  customUserPromptPrefix?: string;
 }
 
 // ─── Anthropic helpers ────────────────────────────────────────────────────────
@@ -256,15 +264,21 @@ export async function planStory(input: PlanInput): Promise<StoryPlan> {
 
   const claudeModel = input.model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
 
+  const systemPrompt = input.customSystemPrompt?.trim() ? input.customSystemPrompt : PLAN_SYSTEM;
+  const userBody = PLAN_USER_TEMPLATE(input.theme, characterList, assetList);
+  const userContent = input.customUserPromptPrefix?.trim()
+    ? `${input.customUserPromptPrefix}\n\n${userBody}`
+    : userBody;
+
   const response = await callClaudeWithRetry(
     client,
     {
       model: claudeModel,
       max_tokens: 4000,
-      system: PLAN_SYSTEM,
+      system: systemPrompt,
       tools: [PLAN_TOOL],
       tool_choice: { type: "tool", name: "plan_story" },
-      messages: [{ role: "user", content: PLAN_USER_TEMPLATE(input.theme, characterList, assetList) }],
+      messages: [{ role: "user", content: userContent }],
     },
     "planStory",
   );
@@ -461,6 +475,12 @@ export async function writeStorySlides(input: WriteInput): Promise<{
   const client = getAnthropicClient();
   const claudeModel = input.model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
 
+  const systemPrompt = input.customSystemPrompt?.trim() ? input.customSystemPrompt : WRITE_SYSTEM;
+  const userBody = WRITE_USER_TEMPLATE(input.theme, input.plan, input.resolvedCharacters, input.imageFormat);
+  const userContent = input.customUserPromptPrefix?.trim()
+    ? `${input.customUserPromptPrefix}\n\n${userBody}`
+    : userBody;
+
   // Per-slide tool-input is dense (textContent + caption + imagePrompt). Generous budget
   // so 10-slide stories don't hit max_tokens — Anthropic returns truncated tool input
   // (slides becomes a partial string) when max_tokens trips.
@@ -469,13 +489,13 @@ export async function writeStorySlides(input: WriteInput): Promise<{
     {
       model: claudeModel,
       max_tokens: 16000,
-      system: WRITE_SYSTEM,
+      system: systemPrompt,
       tools: [WRITE_TOOL],
       tool_choice: { type: "tool", name: "write_story_slides" },
       messages: [
         {
           role: "user",
-          content: WRITE_USER_TEMPLATE(input.theme, input.plan, input.resolvedCharacters, input.imageFormat),
+          content: userContent,
         },
       ],
     },

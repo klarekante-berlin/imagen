@@ -236,3 +236,9 @@ export async function updateSlideByStoryAndNumber(storyId: number, slideNumber: 
   if (!db) throw new Error("Database not available");
   await db.update(slides).set(data).where(and(eq(slides.storyId, storyId), eq(slides.slideNumber, slideNumber)));
 }
+
+export async function deleteSlide(id: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(slides).where(eq(slides.id, id));
+}
