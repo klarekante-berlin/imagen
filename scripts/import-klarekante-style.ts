@@ -192,7 +192,9 @@ async function importOne(
 
     const presigned = args.dryRun ? null : await getPresignedStorageUrl(url);
     let visionSource;
-    if (presigned) {
+    // Anthropic vision only accepts http(s) URLs (not data: URIs). For local
+    // backend we get a data: URI back — fall through to base64 source.
+    if (presigned && presigned.startsWith("http")) {
       visionSource = { type: "url" as const, url: presigned };
     } else {
       const prepared = await prepareImageForVision(buffer, mime);

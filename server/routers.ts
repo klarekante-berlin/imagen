@@ -101,7 +101,9 @@ const assetRouter = router({
           }));
           const presigned = await getPresignedStorageUrl(url);
           let source;
-          if (presigned) {
+          // Anthropic vision rejects data: URIs as `url`; only http(s).
+          // Use the in-memory buffer for base64 in any non-http case.
+          if (presigned && presigned.startsWith("http")) {
             source = { type: "url" as const, url: presigned };
           } else {
             const prepared = await prepareImageForVision(buffer, input.mimeType);

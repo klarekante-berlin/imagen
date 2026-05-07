@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { Asset, AiModel, ImageFormat } from "../drizzle/schema";
-import { storagePut } from "./storage";
+import { storagePut, storageReadLocal } from "./storage";
 import { ENV } from "./_core/env";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -613,19 +613,27 @@ export function detectCharactersInText(
   return found;
 }
 
-// ─── Presigned URL Helper ─────────────────────────────────────────────────────
+// ─── Reference Image URL Helper ───────────────────────────────────────────────
 
 /**
- * Converts a relative /manus-storage/... URL to an absolute presigned CloudFront URL.
- * Atlas Cloud requires absolute URLs for reference_images.
+ * Resolves a /manus-storage/<key> URL into something Atlas Cloud can fetch.
+ *
+ * - Already absolute http(s) URL → return as-is.
+ * - STORAGE_BACKEND=forge → presigned CloudFront URL via Forge.
+ * - STORAGE_BACKEND=local → read the file and return a `data:image/...;base64,...`
+ *   URI. Avoids the chicken-and-egg of "Atlas can't reach localhost".
  */
 export async function getPresignedStorageUrl(relativeOrAbsoluteUrl: string): Promise<string | null> {
   if (!relativeOrAbsoluteUrl) return null;
-  // Already absolute (e.g. https://...)
   if (relativeOrAbsoluteUrl.startsWith("http")) return relativeOrAbsoluteUrl;
-  // Extract the key from /manus-storage/<key>
   const key = relativeOrAbsoluteUrl.replace(/^\/manus-storage\//, "");
   if (!key) return null;
+
+  if (ENV.storageBackend === "local") {
+    const file = await storageReadLocal(key);
+    if (!file) return null;
+    return `data:${file.contentType};base64,${file.buffer.toString("base64")}`;
+  }
 
   const forgeApiUrl = ENV.forgeApiUrl;
   const forgeApiKey = ENV.forgeApiKey;
