@@ -43,6 +43,13 @@
       "when": 1778148990525,
       "tag": "0005_pretty_vindicator",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1778178751066,
+      "tag": "0006_curvy_grey_gargoyle",
+      "breakpoints": true
     }
   ]
 }

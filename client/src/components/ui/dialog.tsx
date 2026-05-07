@@ -4,7 +4,7 @@ import { XIcon } from "lucide-react";
 import * as React from "react";
 
 // Context to track composition state across dialog children
-const DialogCompositionContext = React.createContext<{
+export const DialogCompositionContext = React.createContext<{
   isComposing: () => boolean;
   setComposing: (composing: boolean) => void;
   justEndedComposing: () => boolean;
@@ -15,9 +15,6 @@ const DialogCompositionContext = React.createContext<{
   justEndedComposing: () => false,
   markCompositionEnd: () => {},
 });
-
-export const useDialogComposition = () =>
-  React.useContext(DialogCompositionContext);
 
 function Dialog({
   ...props
@@ -98,7 +95,7 @@ function DialogContent({
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean;
 }) {
-  const { isComposing } = useDialogComposition();
+  const { isComposing } = React.useContext(DialogCompositionContext);
 
   const handleEscapeKeyDown = React.useCallback(
     (e: KeyboardEvent) => {

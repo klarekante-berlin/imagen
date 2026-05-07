@@ -1,9 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { COOKIE_NAME } from "@shared/const";
-import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
+import { publicProcedure, router } from "./_core/trpc";
 import {
   createAsset, getAssets, getAssetById, getAssetsByIds, updateAsset, deleteAsset,
   getAssetByContentHash, bulkApproveHighConfidence,
@@ -13,12 +11,12 @@ import {
 } from "./db";
 import { storagePut } from "./storage";
 import {
-  generateStoryText, generateSlideImage, generateSlideImageFreepik,
-  ConsistencyContext, ConsistencyCharacterRef,
+  generateSlideImage, generateSlideImageFreepik,
   detectCharactersFromScript, getPresignedStorageUrl,
   normalizeConsistencyContext,
 } from "./storyService";
-import { planStory, writeStorySlides, type StoryPlan, type DetectedEntity } from "./storyPlanner";
+import { planStory, writeStorySlides } from "./storyPlanner";
+import type { ConsistencyCharacterRef, StoryPlan } from "@shared/types";
 import {
   categorizeImage, reviewStatusFromResult,
   type CategorizeResult, type KnownCharacter,
@@ -27,7 +25,6 @@ import { prepareImageForVision } from "./_core/imagePrep";
 import {
   ASSET_CATEGORIES, CHARACTER_KINDS, REVIEW_STATUSES,
 } from "../drizzle/schema";
-import type { TRPCError } from "@trpc/server";
 
 // ─── Asset Router ─────────────────────────────────────────────────────────────
 
@@ -56,7 +53,7 @@ const assetRouter = router({
       return getAssetById(input.id);
     }),
 
-  upload: protectedProcedure
+  upload: publicProcedure
     .input(z.object({
       name: z.string().min(1),
       category: z.enum(ASSET_CATEGORIES).optional(),
@@ -185,7 +182,7 @@ const assetRouter = router({
       };
     }),
 
-  update: protectedProcedure
+  update: publicProcedure
     .input(z.object({
       id: z.number(),
       name: z.string().optional(),
@@ -200,7 +197,7 @@ const assetRouter = router({
       return { success: true };
     }),
 
-  approveCategory: protectedProcedure
+  approveCategory: publicProcedure
     .input(z.object({
       id: z.number(),
       category: z.enum(ASSET_CATEGORIES).optional(),
@@ -214,14 +211,14 @@ const assetRouter = router({
       return { success: true };
     }),
 
-  bulkApprove: protectedProcedure
+  bulkApprove: publicProcedure
     .input(z.object({ minConfidence: z.number().min(0).max(100).default(80) }))
     .mutation(async ({ input }) => {
       const approved = await bulkApproveHighConfidence(input.minConfidence);
       return { approved };
     }),
 
-  delete: protectedProcedure
+  delete: publicProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ input }) => {
       await deleteAsset(input.id);
@@ -239,7 +236,7 @@ const characterRouter = router({
     .input(z.object({ id: z.number() }))
     .query(async ({ input }) => getCharacterById(input.id)),
   kinds: publicProcedure.query(() => CHARACTER_KINDS),
-  update: protectedProcedure
+  update: publicProcedure
     .input(z.object({
       id: z.number(),
       name: z.string().optional(),
@@ -298,7 +295,7 @@ const storyRouter = router({
     }),
 
   /** Stage 1 — return a StoryPlan for the UI to confirm. No DB write. */
-  plan: protectedProcedure
+  plan: publicProcedure
     .input(z.object({
       theme: z.string().min(1),
       model: z.enum(["claude-sonnet-4-6", "claude-opus-4-5"]).default("claude-sonnet-4-6"),
@@ -332,7 +329,7 @@ const storyRouter = router({
     }),
 
   /** Stage 3 — write slides + persist story using the user-confirmed plan. */
-  generate: protectedProcedure
+  generate: publicProcedure
     .input(z.object({
       theme: z.string().min(1),
       plan: z.object({
@@ -485,66 +482,14 @@ const storyRouter = router({
       return { storyId, title: plan.title };
     }),
 
-  /** @deprecated Use stories.plan + stories.generate. Kept for backcompat. */
-  create: protectedProcedure
-    .input(z.object({
-      theme: z.string().min(1),
-      selectedAssetIds: z.array(z.number()).default([]),
-      model: z.enum(["claude-sonnet-4-6", "claude-opus-4-5"]).default("claude-sonnet-4-6"),
-      imageFormat: z.enum(["1:1", "4:5"]).default("1:1"),
-      imageProvider: z.enum(["gpt-image-2", "freepik"]).default("gpt-image-2"),
-    }))
-    .mutation(async ({ input }) => {
-      // Fetch selected assets for context
-      const selectedAssets = await getAssetsByIds(input.selectedAssetIds);
-
-      // Generate story text via Claude
-      const storyContent = await generateStoryText(
-        input.theme,
-        selectedAssets,
-        input.model,
-        input.imageFormat
-      );
-
-      // Create story in DB
-      const storyId = await createStory({
-        title: storyContent.title,
-        theme: input.theme,
-        status: "draft",
-        model: input.model,
-        imageProvider: input.imageProvider,
-        imageFormat: input.imageFormat,
-        consistencyContext: storyContent.consistencyContext,
-        usedAssetIds: storyContent.usedAssetIds,
-      });
-
-      // Create 10 slide placeholders
-      await createSlides(storyId, 10);
-
-      // Update each slide with generated content
-      for (const slide of storyContent.slides) {
-        await updateSlideByStoryAndNumber(storyId, slide.slideNumber, {
-          textContent: slide.textContent,
-          caption: slide.caption,
-          charactersInSlide: slide.charactersInSlide,
-          imagePrompt: slide.imagePrompt,
-          status: "pending",
-        });
-      }
-
-      await updateStory(storyId, { status: "draft" });
-
-      return { storyId, title: storyContent.title };
-    }),
-
-  delete: protectedProcedure
+  delete: publicProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ input }) => {
       await deleteStory(input.id);
       return { success: true };
     }),
 
-  duplicate: protectedProcedure
+  duplicate: publicProcedure
     .input(z.object({ id: z.number(), newTheme: z.string().optional() }))
     .mutation(async ({ input }) => {
       const original = await getStoryById(input.id);
@@ -582,7 +527,7 @@ const storyRouter = router({
 // ─── Image Generation Router ──────────────────────────────────────────────────
 
 const generateRouter = router({
-  generateAllImages: protectedProcedure
+  generateAllImages: publicProcedure
     .input(z.object({ storyId: z.number() }))
     .mutation(async ({ input }) => {
       const story = await getStoryById(input.storyId);
@@ -673,7 +618,7 @@ const generateRouter = router({
       return { success: true, errorCount };
     }),
 
-  regenerateSlide: protectedProcedure
+  regenerateSlide: publicProcedure
     .input(z.object({ slideId: z.number() }))
     .mutation(async ({ input }) => {
       const slide = await getSlideById(input.slideId);
@@ -765,14 +710,6 @@ const exportRouter = router({
 
 export const appRouter = router({
   system: systemRouter,
-  auth: router({
-    me: publicProcedure.query((opts) => opts.ctx.user),
-    logout: publicProcedure.mutation(({ ctx }) => {
-      const cookieOptions = getSessionCookieOptions(ctx.req);
-      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-      return { success: true } as const;
-    }),
-  }),
   assets: assetRouter,
   characters: characterRouter,
   stories: storyRouter,

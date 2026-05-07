@@ -18,25 +18,7 @@ import {
 
 // ─── Types matching server/storyPlanner.ts ────────────────────────────────────
 
-interface Scene {
-  id: string;
-  slideRange: [number, number];
-  environment: string;
-  environmentLockNotes: string;
-  transitionToNext?: string;
-}
-
-interface DetectedEntity {
-  name: string;
-  type: "character" | "object" | "place";
-  matchedCharacterId?: number;
-  matchedAssetIds: number[];
-  needsWorldBuilding: boolean;
-  draftVisualDescription?: string | null;
-  character: {
-    id: number; name: string; aliases: string[] | null; kind: string;
-  } | null;
-}
+import type { Scene, DetectedEntity } from "@shared/types";
 
 interface PlanState {
   title: string;

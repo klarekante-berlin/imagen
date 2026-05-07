@@ -1,15 +1,15 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { jsonrepair } from "jsonrepair";
 import type { Asset, AiModel, ImageFormat, Character } from "../drizzle/schema";
-import { ENV } from "./_core/env";
-import {
-  ConsistencyContext,
+import type {
   ConsistencyCharacterRef,
-  PROJECT_STYLE_ANCHOR,
-  Scene,
+  ConsistencyContext,
+  DetectedEntity,
   SlideContent,
-  normalizeConsistencyContext,
-} from "./storyService";
+  StoryPlan,
+} from "@shared/types";
+import { ENV } from "./_core/env";
+import { PROJECT_STYLE_ANCHOR, normalizeConsistencyContext } from "./storyService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -18,23 +18,6 @@ export interface PlanInput {
   model: AiModel;
   characterLibrary: Pick<Character, "id" | "name" | "aliases" | "kind" | "defaultDescription">[];
   assetCatalog: Asset[];
-}
-
-export interface DetectedEntity {
-  name: string;
-  type: "character" | "object" | "place";
-  matchedCharacterId?: number;
-  matchedAssetIds: number[];
-  needsWorldBuilding: boolean;
-  draftVisualDescription?: string;
-}
-
-export interface StoryPlan {
-  title: string;
-  suggestedSlideCount: number;     // 3..10
-  reasoning: string;
-  scenes: Scene[];                 // covers [1..suggestedSlideCount] without gaps
-  detectedEntities: DetectedEntity[];
 }
 
 export interface WriteInput {

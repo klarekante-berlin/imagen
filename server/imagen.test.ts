@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 
@@ -11,7 +11,6 @@ vi.mock("./db", () => ({
   updateAsset: vi.fn().mockResolvedValue(undefined),
   deleteAsset: vi.fn().mockResolvedValue(undefined),
   getAssetByContentHash: vi.fn().mockResolvedValue(undefined),
-  getAssetBySourcePath: vi.fn().mockResolvedValue(undefined),
   bulkApproveHighConfidence: vi.fn().mockResolvedValue(0),
   getCharacters: vi.fn().mockResolvedValue([]),
   getCharacterById: vi.fn().mockResolvedValue(undefined),
@@ -29,8 +28,6 @@ vi.mock("./db", () => ({
   getSlideById: vi.fn().mockResolvedValue(undefined),
   updateSlide: vi.fn().mockResolvedValue(undefined),
   updateSlideByStoryAndNumber: vi.fn().mockResolvedValue(undefined),
-  upsertUser: vi.fn().mockResolvedValue(undefined),
-  getUserByOpenId: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("./_core/visionCategorize", () => ({
@@ -79,24 +76,6 @@ vi.mock("./storyPlanner", () => ({
 }));
 
 vi.mock("./storyService", () => ({
-  generateStoryText: vi.fn().mockResolvedValue({
-    title: "Test Story",
-    consistencyContext: {
-      artStyle: "cartoon",
-      colorPalette: "vibrant",
-      environment: "Berlin",
-      characters: [],
-      globalStylePrompt: "cartoon style",
-    },
-    slides: Array.from({ length: 10 }, (_, i) => ({
-      slideNumber: i + 1,
-      textContent: `Slide ${i + 1} text`,
-      caption: `Caption ${i + 1}`,
-      charactersInSlide: [],
-      imagePrompt: `Prompt for slide ${i + 1}`,
-    })),
-    usedAssetIds: [],
-  }),
   generateSlideImage: vi.fn().mockResolvedValue({ imageKey: "test/key.png", imageUrl: "/manus-storage/test/key.png" }),
   generateSlideImageFreepik: vi.fn().mockResolvedValue({ imageKey: "test/key.png", imageUrl: "/manus-storage/test/key.png" }),
   getPresignedStorageUrl: vi.fn().mockResolvedValue(null),
@@ -108,55 +87,12 @@ vi.mock("./storage", () => ({
   storagePut: vi.fn().mockResolvedValue({ key: "test/key.png", url: "/manus-storage/test/key.png" }),
 }));
 
-type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
-
-function createAuthContext(): TrpcContext {
-  const user: AuthenticatedUser = {
-    id: 1,
-    openId: "test-user",
-    email: "test@example.com",
-    name: "Test User",
-    loginMethod: "manus",
-    role: "admin",
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    lastSignedIn: new Date(),
-  };
-  return {
-    user,
-    req: { protocol: "https", headers: {} } as TrpcContext["req"],
-    res: { clearCookie: vi.fn() } as unknown as TrpcContext["res"],
-  };
-}
-
 function createPublicContext(): TrpcContext {
   return {
-    user: null,
     req: { protocol: "https", headers: {} } as TrpcContext["req"],
     res: { clearCookie: vi.fn() } as unknown as TrpcContext["res"],
   };
 }
-
-describe("auth router", () => {
-  it("me returns null for unauthenticated users", async () => {
-    const caller = appRouter.createCaller(createPublicContext());
-    const result = await caller.auth.me();
-    expect(result).toBeNull();
-  });
-
-  it("me returns user for authenticated users", async () => {
-    const caller = appRouter.createCaller(createAuthContext());
-    const result = await caller.auth.me();
-    expect(result?.name).toBe("Test User");
-  });
-
-  it("logout clears session cookie", async () => {
-    const ctx = createAuthContext();
-    const caller = appRouter.createCaller(ctx);
-    const result = await caller.auth.logout();
-    expect(result.success).toBe(true);
-  });
-});
 
 describe("assets router", () => {
   it("list returns empty array when no assets", async () => {
@@ -173,19 +109,8 @@ describe("assets router", () => {
     expect(result).toContain("sport");
   });
 
-  it("upload requires authentication", async () => {
+  it("upload succeeds", async () => {
     const caller = appRouter.createCaller(createPublicContext());
-    await expect(
-      caller.assets.upload({
-        name: "Test",
-        category: "familie",
-        imageData: "base64data",
-      })
-    ).rejects.toThrow();
-  });
-
-  it("upload succeeds for authenticated users", async () => {
-    const caller = appRouter.createCaller(createAuthContext());
     const result = await caller.assets.upload({
       name: "Test Asset",
       category: "familie",
@@ -211,28 +136,8 @@ describe("stories router", () => {
     expect(result).toBeNull();
   });
 
-  it("create requires authentication", async () => {
-    const caller = appRouter.createCaller(createPublicContext());
-    await expect(
-      caller.stories.create({ theme: "Test theme" })
-    ).rejects.toThrow();
-  });
-
-  it("create generates story with Claude", async () => {
-    const caller = appRouter.createCaller(createAuthContext());
-    const result = await caller.stories.create({
-      theme: "Familie beim Frühstück",
-      selectedAssetIds: [],
-      model: "claude-sonnet-4-6",
-      imageFormat: "1:1",
-      imageProvider: "gpt-image-2",
-    });
-    expect(result.storyId).toBe(1);
-    expect(result.title).toBe("Test Story");
-  });
-
   it("plan returns proposed slide count and scenes", async () => {
-    const caller = appRouter.createCaller(createAuthContext());
+    const caller = appRouter.createCaller(createPublicContext());
     const result = await caller.stories.plan({
       theme: "Test",
       model: "claude-sonnet-4-6",
@@ -243,7 +148,7 @@ describe("stories router", () => {
   });
 
   it("generate writes story from confirmed plan with variable count", async () => {
-    const caller = appRouter.createCaller(createAuthContext());
+    const caller = appRouter.createCaller(createPublicContext());
     const result = await caller.stories.generate({
       theme: "Test theme",
       plan: {
@@ -265,6 +170,6 @@ describe("stories router", () => {
 describe("export router", () => {
   it("getExportData returns null for non-existent story", async () => {
     const caller = appRouter.createCaller(createPublicContext());
-    await expect(caller.export.getExportData({ id: 999 })).rejects.toThrow();
+    await expect(caller.export.getExportData({ storyId: 999 })).rejects.toThrow();
   });
 });

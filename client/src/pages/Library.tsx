@@ -35,37 +35,10 @@ import {
   AlertTriangleIcon,
 } from "lucide-react";
 import type { Asset } from "../../../drizzle/schema";
-
-const CATEGORY_LABELS: Record<string, string> = {
-  all: "Alle",
-  familie: "Familie",
-  historisch: "Historisch",
-  sport: "Sport",
-  musik: "Musik",
-  politiker: "Politiker",
-  "tech-ceo": "Tech CEOs",
-  tiere: "Tiere",
-  umgebungen: "Umgebungen",
-  fahrzeuge: "Fahrzeuge",
-  items: "Items",
-  "stil-referenz": "Stil-Referenz",
-  sonstiges: "Sonstiges",
-};
+import { CATEGORY_LABELS } from "@/const";
+import type { FolderHint } from "@/types";
 
 const CATEGORIES = Object.keys(CATEGORY_LABELS);
-
-// Mirrors scripts/import-klarekante-style.ts FOLDER_HINTS — strong priors
-// for vision categorization when the user is uploading a known persona batch.
-type AssetCategoryKey =
-  | "familie" | "historisch" | "sport" | "musik" | "politiker" | "tech-ceo"
-  | "tiere" | "umgebungen" | "fahrzeuge" | "items" | "stil-referenz" | "sonstiges";
-
-type FolderHint = {
-  characterName?: string;
-  characterKind?: "family" | "public_figure" | "fictional" | "world-built";
-  characterAliases?: string[];
-  fallbackCategory?: AssetCategoryKey;
-};
 
 const UPLOAD_HINTS: Record<string, FolderHint & { label: string }> = {
   none: { label: "🪄 Auto (Vision entscheidet)" },
