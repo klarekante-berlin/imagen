@@ -153,6 +153,14 @@ function getAnthropicClient(): Anthropic {
 const ATLAS_BASE = "https://api.atlascloud.ai/api/v1";
 const ATLAS_MODEL = "openai/gpt-image-2/text-to-image";
 
+/**
+ * Project-wide visual DNA. Always prepended to every slide prompt so the
+ * style stays locked across stories — Claude can add per-story flavor in
+ * globalStylePrompt but cannot redefine the foundation.
+ */
+export const PROJECT_STYLE_ANCHOR =
+  "3D cartoon render in the style of The Mitchells vs the Machines / Pixar — expressive faces, bold confident outlines, warm cinematic lighting, detailed fabric and skin textures, slightly stylized proportions. Always this exact rendering style.";
+
 function getAtlasKey(): string {
   const key = ENV.atlascloudApiKey || process.env.ATLASCLOUD_API_KEY;
   if (!key) throw new Error("ATLASCLOUD_API_KEY not configured");
@@ -478,9 +486,11 @@ export async function generateSlideImage(
   const nextScene = consistencyContext.scenes[sceneIdx + 1];
   const isLastOfScene = slideNumber === scene.slideRange[1];
 
-  // Build per-slide character description block. This guarantees consistency even
-  // when reference_images can't be passed (e.g. local-storage backend without
-  // a public URL Atlas Cloud can reach).
+  // Build per-slide character block. When the character has a reference image
+  // attached (via characterReferenceUrls), the model already sees the full
+  // appearance — extra text just adds noise. When NO ref is available, we
+  // include the full visualDescription + outfit so consistency holds via text.
+  const hasAnyRefs = characterReferenceUrls.length > 0;
   const slideChars = slideCharacterNames
     .map((name) =>
       consistencyContext.characters.find(
@@ -488,21 +498,36 @@ export async function generateSlideImage(
       ),
     )
     .filter((c): c is NonNullable<typeof c> => !!c);
-  const characterBlock =
-    slideChars.length > 0
-      ? "Characters in this slide: " +
-        slideChars
-          .map((c) => {
-            const parts = [`${c.name} — ${c.visualDescription}`];
-            if (c.outfit) parts.push(`outfit: ${c.outfit}`);
-            return parts.join("; ");
-          })
-          .join(" | ") +
-        ". Keep their appearance/outfit identical across slides."
-      : null;
 
-  // Build the full prompt with text overlay instruction
+  const characterBlock = (() => {
+    if (slideChars.length === 0) return null;
+    if (hasAnyRefs) {
+      // Refs carry the appearance — just name them + remind the model to use refs.
+      return (
+        "Characters: " +
+        slideChars.map((c) => c.name).join(", ") +
+        ". Match their appearance EXACTLY to the reference images provided."
+      );
+    }
+    // No refs — describe everything in text.
+    return (
+      "Characters in this slide: " +
+      slideChars
+        .map((c) => {
+          const parts = [`${c.name} — ${c.visualDescription}`];
+          if (c.outfit) parts.push(`outfit: ${c.outfit}`);
+          return parts.join("; ");
+        })
+        .join(" | ") +
+      ". Keep their appearance/outfit identical across slides."
+    );
+  })();
+
+  // Build the full prompt with text overlay instruction. PROJECT_STYLE_ANCHOR
+  // goes first AND last so the rendering style is sticky even when Atlas
+  // truncates or summarizes mid-prompt.
   const fullPrompt = [
+    PROJECT_STYLE_ANCHOR,
     consistencyContext.globalStylePrompt,
     characterBlock,
     `Setting: ${scene.environment}.`,
@@ -511,10 +536,9 @@ export async function generateSlideImage(
       ? `Transition cue: ${scene.transitionToNext} (next scene: ${nextScene.environment}).`
       : null,
     slidePrompt,
-    `Art style: ${consistencyContext.artStyle}.`,
     `Slide ${slideNumber} of ${totalSlides}.`,
-    "High quality 3D render, cinematic composition, sharp details.",
     "Text must be large, bold, clearly readable, positioned in the lower or upper third of the image.",
+    `Final reminder: ${PROJECT_STYLE_ANCHOR}`,
   ]
     .filter(Boolean)
     .join(" ");
