@@ -125,6 +125,13 @@ export async function getCharacterById(id: number): Promise<Character | undefine
   return result[0];
 }
 
+export async function getCharactersByIds(ids: number[]): Promise<Character[]> {
+  if (ids.length === 0) return [];
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(characters).where(inArray(characters.id, ids)) as unknown as Promise<Character[]>;
+}
+
 export async function getCharacterByName(name: string): Promise<Character | undefined> {
   const db = await getDb();
   if (!db) return undefined;

@@ -7,7 +7,7 @@ import {
   getAssetByContentHash, bulkApproveHighConfidence,
   createStory, getStories, getStoryById, updateStory, deleteStory,
   createSlides, getSlidesByStoryId, getSlideById, updateSlide, updateSlideByStoryAndNumber,
-  getCharacters, getCharacterById, updateCharacter, resolveOrCreateCharacter,
+  getCharacters, getCharacterById, getCharactersByIds, updateCharacter, resolveOrCreateCharacter,
 } from "./db";
 import { storagePut } from "./storage";
 import {
@@ -317,13 +317,15 @@ const storyRouter = router({
       });
 
       // Enrich detectedEntities with full character info for the UI
-      const enrichedEntities = await Promise.all(
-        plan.detectedEntities.map(async (e) => {
-          if (!e.matchedCharacterId) return { ...e, character: null };
-          const ch = await getCharacterById(e.matchedCharacterId);
-          return { ...e, character: ch ?? null };
-        }),
-      );
+      const idsToFetch = plan.detectedEntities
+        .map((e) => e.matchedCharacterId)
+        .filter((id): id is number => typeof id === "number");
+      const fetched = idsToFetch.length > 0 ? await getCharactersByIds(idsToFetch) : [];
+      const charById = new Map(fetched.map((c) => [c.id, c]));
+      const enrichedEntities = plan.detectedEntities.map((e) => ({
+        ...e,
+        character: e.matchedCharacterId ? (charById.get(e.matchedCharacterId) ?? null) : null,
+      }));
 
       return { ...plan, detectedEntities: enrichedEntities };
     }),
@@ -544,19 +546,21 @@ const generateRouter = router({
       const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
 
        // Build a map: characterName -> presigned absolute URL for Atlas Cloud reference_images
-      const characterAssetMap = new Map<string, string>();
-      let presignAttempts = 0;
-      for (const char of (ctx.characters || [])) {
-        if (char.assetId && char.assetId > 0) {
+      const characterRefs = (ctx.characters || [])
+        .filter((char) => char.assetId && char.assetId > 0)
+        .map((char) => {
           const asset = usedAssets.find((a) => a.id === char.assetId);
-          if (asset?.imageUrl) {
-            presignAttempts++;
-            // Convert relative /manus-storage/... to absolute presigned URL
-            const presignedUrl = await getPresignedStorageUrl(asset.imageUrl);
-            if (presignedUrl) characterAssetMap.set(char.name.toLowerCase(), presignedUrl);
-          }
-        }
-      }
+          return { name: char.name, asset };
+        })
+        .filter((r) => r.asset?.imageUrl);
+      const presigned = await Promise.all(
+        characterRefs.map((r) => getPresignedStorageUrl(r.asset!.imageUrl!)),
+      );
+      const characterAssetMap = new Map<string, string>();
+      const presignAttempts = characterRefs.length;
+      characterRefs.forEach((r, i) => {
+        if (presigned[i]) characterAssetMap.set(r.name.toLowerCase(), presigned[i]!);
+      });
       if (presignAttempts > 0 && characterAssetMap.size === 0) {
         console.warn(
           `[generate] ${presignAttempts} character ref(s) skipped — no public URL available (STORAGE_BACKEND=local has no presign). Falling back to text-only character descriptions in prompt.`,
@@ -569,48 +573,63 @@ const generateRouter = router({
         await Promise.all(styleRefAssets.map((a) => getPresignedStorageUrl(a.imageUrl ?? "")))
       ).filter((u): u is string => !!u);
 
+      // Run slide image generation in parallel, capped at concurrency 3 to
+      // respect Atlas rate limits. Order-independent — each slide is a unit.
+      const CONCURRENCY = 3;
       let errorCount = 0;
-      for (const slide of storySlides) {
-        if (!slide.imagePrompt) continue;
-        try {
-          await updateSlide(slide.id, { status: "generating" });
+      const queue = storySlides.filter((s) => s.imagePrompt);
+      let cursor = 0;
+      // Re-bind narrowed locals so the closure below sees them as non-null.
+      const storyRef = story;
+      const ctxRef = ctx;
 
-          // Get character reference images for this specific slide.
-          // Atlas hard-caps at 4 refs total. Pick characters first (more impactful
-          // for consistency), up to 3, then fill remaining slots with style refs.
-          const slideCharacters = (slide.charactersInSlide as string[] || []);
-          const charRefUrls = slideCharacters
-            .map((name) => characterAssetMap.get(name.toLowerCase()))
-            .filter((url): url is string => !!url)
-            .slice(0, 3);
+      async function worker() {
+        while (cursor < queue.length) {
+          const slide = queue[cursor++];
+          try {
+            await updateSlide(slide.id, { status: "generating" });
 
-          let result: { imageKey: string; imageUrl: string };
-          if (story.imageProvider === "freepik") {
-            result = await generateSlideImageFreepik(
-              slide.imagePrompt, ctx, slide.slideNumber, input.storyId, story.imageFormat
-            );
-          } else {
-            result = await generateSlideImage(
-              slide.imagePrompt, ctx, slide.slideNumber, input.storyId, story.imageFormat,
-              charRefUrls,
-              styleReferenceUrls,
-              slideCharacters,
-            );
+            // Get character reference images for this specific slide.
+            // Atlas hard-caps at 4 refs total. Pick characters first (more impactful
+            // for consistency), up to 3, then fill remaining slots with style refs.
+            const slideCharacters = (slide.charactersInSlide as string[] || []);
+            const charRefUrls = slideCharacters
+              .map((name) => characterAssetMap.get(name.toLowerCase()))
+              .filter((url): url is string => !!url)
+              .slice(0, 3);
+
+            let result: { imageKey: string; imageUrl: string };
+            if (storyRef.imageProvider === "freepik") {
+              result = await generateSlideImageFreepik(
+                slide.imagePrompt!, ctxRef, slide.slideNumber, input.storyId, storyRef.imageFormat
+              );
+            } else {
+              result = await generateSlideImage(
+                slide.imagePrompt!, ctxRef, slide.slideNumber, input.storyId, storyRef.imageFormat,
+                charRefUrls,
+                styleReferenceUrls,
+                slideCharacters,
+              );
+            }
+
+            await updateSlide(slide.id, {
+              imageKey: result.imageKey,
+              imageUrl: result.imageUrl,
+              status: "complete",
+            });
+          } catch (err) {
+            errorCount++;
+            await updateSlide(slide.id, {
+              status: "error",
+              errorMessage: err instanceof Error ? err.message : "Unknown error",
+            });
           }
-
-          await updateSlide(slide.id, {
-            imageKey: result.imageKey,
-            imageUrl: result.imageUrl,
-            status: "complete",
-          });
-        } catch (err) {
-          errorCount++;
-          await updateSlide(slide.id, {
-            status: "error",
-            errorMessage: err instanceof Error ? err.message : "Unknown error",
-          });
         }
       }
+
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, queue.length) }, () => worker()),
+      );
 
       const finalStatus = errorCount === 0 ? "complete" : errorCount === storySlides.length ? "error" : "complete";
       await updateStory(input.storyId, { status: finalStatus });
@@ -633,16 +652,20 @@ const generateRouter = router({
       const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
 
        // Build character reference map with presigned absolute URLs for Atlas Cloud
-      const characterAssetMap = new Map<string, string>();
-      for (const char of (ctx.characters || [])) {
-        if (char.assetId && char.assetId > 0) {
+      const characterRefs = (ctx.characters || [])
+        .filter((char) => char.assetId && char.assetId > 0)
+        .map((char) => {
           const asset = usedAssets.find((a) => a.id === char.assetId);
-          if (asset?.imageUrl) {
-            const presignedUrl = await getPresignedStorageUrl(asset.imageUrl);
-            if (presignedUrl) characterAssetMap.set(char.name.toLowerCase(), presignedUrl);
-          }
-        }
-      }
+          return { name: char.name, asset };
+        })
+        .filter((r) => r.asset?.imageUrl);
+      const presigned = await Promise.all(
+        characterRefs.map((r) => getPresignedStorageUrl(r.asset!.imageUrl!)),
+      );
+      const characterAssetMap = new Map<string, string>();
+      characterRefs.forEach((r, i) => {
+        if (presigned[i]) characterAssetMap.set(r.name.toLowerCase(), presigned[i]!);
+      });
       const slideCharacters = (slide.charactersInSlide as string[] || []);
       // Match generateAllImages: up to 3 char refs, smart-fill rest with styles in
       // generateSlideImage. Atlas hard-cap is 4 total.
