@@ -165,6 +165,32 @@ const ATLAS_MODEL_EDIT = "openai/gpt-image-2/edit";
 export const PROJECT_STYLE_ANCHOR =
   "3D cartoon render in the style of The Mitchells vs the Machines / Pixar — expressive faces, bold confident outlines, warm cinematic lighting, detailed fabric and skin textures, slightly stylized proportions. Always this exact rendering style.";
 
+/**
+ * Server-side scrubber for Claude's slidePrompt. Despite explicit prompt
+ * rules, Claude occasionally re-adds render-style/format/lighting clauses
+ * that conflict with our project anchor + scene block. Strip sentences
+ * that contain those forbidden phrases before assembling the final prompt.
+ */
+const FORBIDDEN_PROMPT_PHRASES = [
+  /\b(3d|cartoon)\s+(render|cartoon)/gi,
+  /\bpixar[-\s]?style\b/gi,
+  /\b1080\s*x\s*1080(?:px)?\b/gi,
+  /\b1080\s*x\s*1350(?:px)?\b/gi,
+  /\bsquare\s+format\b/gi,
+  /\baspect\s+ratio\b/gi,
+  /\bquadratisches\s+format\b/gi,
+  /\bhochformat\b/gi,
+];
+
+function stripForbiddenStyleClauses(prompt: string): string {
+  // Split by sentence-ish boundaries, drop sentences that match a forbidden
+  // phrase, rejoin. Conservative: only drops the offending sentence, not the
+  // whole prompt.
+  const parts = prompt.split(/(?<=[.!?])\s+/);
+  const kept = parts.filter((s) => !FORBIDDEN_PROMPT_PHRASES.some((rx) => rx.test(s)));
+  return kept.join(" ").trim();
+}
+
 function getAtlasKey(): string {
   const key = ENV.atlascloudApiKey || process.env.ATLASCLOUD_API_KEY;
   if (!key) throw new Error("ATLASCLOUD_API_KEY not configured");
@@ -559,6 +585,10 @@ export async function generateSlideImage(
   const nextScene = consistencyContext.scenes[sceneIdx + 1];
   const isLastOfScene = slideNumber === scene.slideRange[1];
 
+  // Defensive: strip Claude-injected style/format clauses from slidePrompt.
+  // These should be set by the project anchor + scene block, not Claude.
+  const cleanedSlidePrompt = stripForbiddenStyleClauses(slidePrompt);
+
   // Build per-slide character block. When the character has a reference image
   // attached (via characterReferenceUrls), the model already sees the full
   // appearance — extra text just adds noise. When NO ref is available, we
@@ -608,7 +638,7 @@ export async function generateSlideImage(
     isLastOfScene && nextScene && scene.transitionToNext
       ? `Transition cue: ${scene.transitionToNext} (next scene: ${nextScene.environment}).`
       : null,
-    slidePrompt,
+    cleanedSlidePrompt,
     `Slide ${slideNumber} of ${totalSlides}.`,
     "Text must be large, bold, clearly readable, positioned in the lower or upper third of the image.",
     `Final reminder: ${PROJECT_STYLE_ANCHOR}`,
@@ -616,12 +646,13 @@ export async function generateSlideImage(
     .filter(Boolean)
     .join(" ");
 
-  // Combine reference images: character sheets first, then style references
-  // gpt-image-2 via Atlas Cloud accepts up to 4 reference images
-  const allReferenceUrls = [
-    ...characterReferenceUrls.slice(0, 2), // max 2 character sheets
-    ...styleReferenceUrls.slice(0, 2),     // max 2 style references
-  ].filter(Boolean).slice(0, 4);
+  // Combine reference images. Atlas hard-caps at 4 total. Characters first
+  // (max 3 — most impactful for consistency), then fill remaining slots with
+  // style references. So 1 char + up to 3 style refs, or 3 chars + 1 style.
+  const charRefs = characterReferenceUrls.slice(0, 3);
+  const remainingSlots = Math.max(0, 4 - charRefs.length);
+  const styleRefs = styleReferenceUrls.slice(0, remainingSlots);
+  const allReferenceUrls = [...charRefs, ...styleRefs].filter(Boolean).slice(0, 4);
 
   // gpt-image-2 via Atlas Cloud supports 1024x1024 and 1024x1536
   const size = imageFormat === "1:1" ? "1024x1024" : "1024x1536";

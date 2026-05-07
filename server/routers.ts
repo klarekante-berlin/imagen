@@ -617,12 +617,11 @@ const generateRouter = router({
           `[generate] ${presignAttempts} character ref(s) skipped — no public URL available (STORAGE_BACKEND=local has no presign). Falling back to text-only character descriptions in prompt.`,
         );
       }
-      // Style reference: use assets from 'stil-referenz' category (Mitchells etc.)
-      const styleRefAssets = usedAssets.filter(
-        (a) => a.category === "stil-referenz"
-      );
+      // Style references: all stil-referenz assets in this story (incl. typo/font sheets).
+      // Smart-fill below picks the right mix per slide.
+      const styleRefAssets = usedAssets.filter((a) => a.category === "stil-referenz");
       const styleReferenceUrls = (
-        await Promise.all(styleRefAssets.slice(0, 1).map((a) => getPresignedStorageUrl(a.imageUrl ?? "")))
+        await Promise.all(styleRefAssets.map((a) => getPresignedStorageUrl(a.imageUrl ?? "")))
       ).filter((u): u is string => !!u);
 
       let errorCount = 0;
@@ -631,12 +630,14 @@ const generateRouter = router({
         try {
           await updateSlide(slide.id, { status: "generating" });
 
-          // Get character reference images for this specific slide
+          // Get character reference images for this specific slide.
+          // Atlas hard-caps at 4 refs total. Pick characters first (more impactful
+          // for consistency), up to 3, then fill remaining slots with style refs.
           const slideCharacters = (slide.charactersInSlide as string[] || []);
           const charRefUrls = slideCharacters
             .map((name) => characterAssetMap.get(name.toLowerCase()))
             .filter((url): url is string => !!url)
-            .slice(0, 2); // max 2 character refs per slide
+            .slice(0, 3);
 
           let result: { imageKey: string; imageUrl: string };
           if (story.imageProvider === "freepik") {

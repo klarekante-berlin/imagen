@@ -141,10 +141,16 @@ SCENES:
 - Jede Scene hat eine spezifische Location die GLEICH bleibt für ihre Slides
 - Wenn die Story Location wechselt: zweite Scene mit transitionToNext (Bridge-Beschreibung)
 
-DETECTED ENTITIES:
-- Identifiziere alle Personen, wichtigen Objekte und Orte die im Skript vorkommen
-- Versuche jede zu existierenden characterId zu matchen (wenn klar)
+DETECTED ENTITIES (KRITISCH):
+- Nur INDIVIDUELLE Personen/Tiere/Objekte als character/object — niemals Gruppen-Begriffe
+- "Familie", "Family", "Eltern", "Kinder", "die Klarekantes", "wir alle" sind GRUPPEN, NICHT als character listen!
+  Stattdessen: einzelne family-kind Charaktere aus der Library expanden (Papa + Mama + Sohn + Tochter + Tier)
+- "Wir", "ich", "uns", "ich erzähle" beziehen sich meist auf den Erzähler/Host = Toni / Papa
+  → matched einen einzigen family-Character, nicht zwei
+- DEDUPE: wenn zwei DB-Charaktere dieselbe Person sind (überlappende aliases wie beide "Papa"/"Vater"),
+  pick NUR einen — bevorzuge den Eintrag wessen name im Skript wörtlich vorkommt
 - Wenn KEIN passender Character existiert: needsWorldBuilding=true mit draftVisualDescription
+- Maximal 6 detectedEntities (sonst wird das Carousel überladen)
 - Tiere als character zählen, generische Items als object/place
 
 Antworte IMMER als valides JSON, kein Markdown.`;
@@ -353,26 +359,38 @@ KONSISTENZ:
 - Pro Slide gibt es eine sceneId — der image-Generator nutzt das Setting aus dem Plan
 - Outfits/Visuals der Charaktere bleiben in allen Slides identisch (siehe character-Liste)
 
-VISUELLER RENDER-STIL (PROJEKT-WEIT FEST — nicht überschreiben):
-- 3D-Cartoon im Mitchell's vs the Machines / Pixar Stil
-- Wird vom Server automatisch in jeden imagePrompt eingefügt
-- Du gibst nur colorPalette (Farbstimmung) + sceneToneNotes (Beleuchtung/Mood) zurück
-- imagePrompt soll die SZENE beschreiben, nicht den Render-Stil neu definieren
+imagePrompt FORMAT (STRENG):
+imagePrompt darf NUR enthalten:
+  1) was im Bild PASSIERT (Aktion, Pose, Gesichtsausdruck, Kameraperspektive)
+  2) Text-Overlay-Anweisung mit dem textContent
+
+imagePrompt darf NIEMALS enthalten:
+  ❌ Render-Stil ("3D cartoon", "Pixar style", "render", "animation")
+  ❌ Format-Angaben ("1080x1080", "square format", "aspect ratio")
+  ❌ Charakter-Aussehen ("kahlköpfig", "blau-kariertes Hemd", "in his 40s")
+       — die Refs zeigen das, das ist Server-Job
+  ❌ Setting-Re-Beschreibung ("Berliner Küche am Morgen") — das prependiert der Server
+  ❌ Doppelt erwähnte Charaktere die dieselbe Person sind
+  ❌ Beleuchtungs-Beschreibung ("warmes goldenes Sonnenlicht") — kommt aus sceneToneNotes
+
+GUT: "Toni sits at the kitchen table, jaw dropped, pointing aggressively at the viewer.
+       Large bold text overlay above: 'Sonntagsfrühstück. Alles perfekt. Noch.'"
+SCHLECHT: "3D Pixar render, 1080x1080. Berliner Küche, warmes Licht. Toni (kahlköpfig,
+            bärtig, blau-kariertes Hemd) sitzt am Tisch …"
 
 CHARAKTERE IM imagePrompt:
-- Wenn Charakter eine referenceImageUrl hat: nur Name + Aktion erwähnen ("Toni leans back, looking annoyed")
-- Wenn KEINE Referenz: volle Beschreibung (Outfit, Aussehen, Alter)
-- Doppelt zu beschreiben wenn Ref vorhanden = nur Noise
+- Charaktere mit ✓ HAT REF → nur Name + Aktion ("Papa lacht", "Sohn rollt Augen")
+- Charaktere mit ✗ keine Ref → trotzdem KURZ halten, max 5 Wörter Aussehen
+  ("Mama, mid-40s in pajamas") — die volle Description ergänzt der Server
 
 TEXT-OVERLAY:
 - textContent muss auch ohne Bild verständlich sein
-- imagePrompt MUSS textContent als großen Text-Overlay im Bild enthalten
+- imagePrompt MUSS textContent als großen Text-Overlay erwähnen
+- Position: meist obere oder untere Drittel
 
 WICHTIG ZU STRINGS:
-- Verwende NIEMALS doppelte Anführungszeichen " innerhalb von String-Werten — das bricht die JSON-Struktur
-- Für Zitate/Dialoge: nutze einfache Anführungszeichen ' oder Gedankenstriche —
-- Beispiel falsch: textContent: "Er sagte "Hallo"" ← BRICHT JSON
-- Beispiel richtig: textContent: "Er sagte 'Hallo'" oder "Er sagte: Hallo"
+- Verwende NIEMALS doppelte Anführungszeichen " innerhalb von String-Werten — bricht JSON
+- Für Zitate/Dialoge: einfache Anführungszeichen ' oder Gedankenstriche —
 - Newlines im textContent: \\n ist OK
 
 Antworte über das tool_use API.`;
