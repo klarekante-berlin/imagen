@@ -18,8 +18,15 @@ import {
   normalizeConsistencyContext,
   findSceneForSlide,
   deriveSceneSlideRanges,
+  augmentImagePromptWithComposition,
 } from "./storyService";
-import { planStory, rewriteSlideImagePrompt, writeStorySlides } from "./storyPlanner";
+import {
+  composeSlideAction,
+  planStory,
+  rewriteSlideImagePrompt,
+  writeStorySlides,
+  type ComposeSlideActionResult,
+} from "./storyPlanner";
 import type { ConsistencyCharacterRef, ConsistencyContext, Scene, StoryPlan } from "@shared/types";
 import type { Slide, Story } from "../drizzle/schema";
 import {
@@ -32,6 +39,125 @@ import type { AssetVariant } from "@shared/types";
 import {
   ASSET_CATEGORIES, CHARACTER_KINDS, REVIEW_STATUSES,
 } from "../drizzle/schema";
+import type { Asset, AiModel } from "../drizzle/schema";
+
+// ─── Composer helpers (Branch A — vision compose) ─────────────────────────────
+
+/**
+ * Per-slide composer call. Resolves character variants from a pre-fetched
+ * asset map, runs `composeSlideAction`, returns both the result and the
+ * augmented `imagePrompt` ready to persist on the slide row.
+ *
+ * Returns `null` when there's nothing to compose (no character has variants
+ * AND no scene variants available) — caller should keep the original prompt
+ * and persist null `selectedVariants` / `composedActivities`.
+ *
+ * Throws never — composer/network failures fall through to the caller's
+ * try/catch so a single bad slide doesn't take down the whole story-gen.
+ */
+async function composeAndAugmentSlide(args: {
+  slide: {
+    slideNumber: number;
+    textContent: string;
+    imagePrompt: string;
+    charactersInSlide: string[];
+    sceneId: string | null;
+  };
+  scene: Scene | null;
+  storyTheme: string;
+  characters: ConsistencyCharacterRef[];
+  assetById: Map<number, Asset>;
+  model: AiModel;
+}): Promise<{
+  composition: ComposeSlideActionResult;
+  imagePrompt: string;
+  selectedVariants: Record<string, string>;
+  composedActivities: Record<string, string>;
+  sceneActivityNotes: string | null;
+} | null> {
+  // Build per-character variant lists (only for characters appearing in
+  // this slide). Drop characters whose asset has no variants.
+  const charactersWithVariants: Array<{ name: string; variants: AssetVariant[] }> = [];
+  const variantDescriptionsByChar = new Map<string, Map<string, string>>();
+  for (const charName of args.slide.charactersInSlide) {
+    const ref = args.characters.find(
+      (c) => c.name.toLowerCase() === charName.toLowerCase(),
+    );
+    if (!ref || !ref.assetId) continue;
+    const asset = args.assetById.get(ref.assetId);
+    const variants = asset?.variants ?? [];
+    if (variants.length === 0) continue;
+    charactersWithVariants.push({ name: charName, variants });
+    const descMap = new Map<string, string>();
+    for (const v of variants) descMap.set(v.name, v.description);
+    variantDescriptionsByChar.set(charName, descMap);
+  }
+
+  // Scene variants (environment sheet).
+  let sceneVariants: AssetVariant[] | undefined;
+  let sceneVariantDescriptionsByName: Map<string, string> | undefined;
+  if (args.scene?.environmentRefAssetId) {
+    const envAsset = args.assetById.get(args.scene.environmentRefAssetId);
+    if (envAsset?.variants && envAsset.variants.length > 0) {
+      sceneVariants = envAsset.variants;
+      sceneVariantDescriptionsByName = new Map(
+        envAsset.variants.map((v) => [v.name, v.description]),
+      );
+    }
+  }
+
+  // Zero-cost no-op: no character has variants AND no scene variants.
+  if (charactersWithVariants.length === 0 && !sceneVariants) {
+    return null;
+  }
+
+  const composition = await composeSlideAction({
+    slide: args.slide,
+    scene: args.scene,
+    storyTheme: args.storyTheme,
+    charactersWithVariants,
+    sceneVariants,
+    inspirationSheets: undefined, // Branch A skips retrieval
+    model: args.model,
+  });
+
+  // Build per-character variant-description map (resolved variant name only)
+  // for the augmenter.
+  const variantDescriptionsForAugment = new Map<string, string>();
+  for (const [name, variantName] of Object.entries(composition.variantsByCharacter)) {
+    const desc = variantDescriptionsByChar.get(name)?.get(variantName);
+    if (desc) variantDescriptionsForAugment.set(name, desc);
+  }
+  const sceneVariantDescription = composition.sceneVariant
+    ? sceneVariantDescriptionsByName?.get(composition.sceneVariant)
+    : undefined;
+
+  const augmented = augmentImagePromptWithComposition(
+    args.slide.imagePrompt,
+    composition,
+    args.slide.charactersInSlide,
+    variantDescriptionsForAugment,
+    sceneVariantDescription,
+  );
+
+  // Build persistable selectedVariants map (scoped keys, mirroring the
+  // existing schema convention: "character:<name>" / "scene:<sceneId>").
+  const selectedVariants: Record<string, string> = {};
+  for (const [name, variantName] of Object.entries(composition.variantsByCharacter)) {
+    selectedVariants[`character:${name}`] = variantName;
+  }
+  if (composition.sceneVariant && args.slide.sceneId) {
+    selectedVariants[`scene:${args.slide.sceneId}`] = composition.sceneVariant;
+  }
+
+  return {
+    composition,
+    imagePrompt: augmented,
+    selectedVariants,
+    composedActivities: composition.activitiesByCharacter,
+    sceneActivityNotes: composition.sceneActivityNotes ?? null,
+  };
+}
 
 // ─── Asset Router ─────────────────────────────────────────────────────────────
 
@@ -386,6 +512,40 @@ const slidesRouter = router({
       return { success: true };
     }),
 
+  /**
+   * User-override of composer-picked variants. Merges into existing
+   * `slide.selectedVariants` (does not replace wholesale). Empty-string value
+   * for a key removes it from the merged map. Sets `needsRegen=true` since
+   * the rendered image still reflects the previous variant pick.
+   *
+   * Note: the persisted `imagePrompt` still contains the OLD augmented
+   * "Character details:" block. The user can pick "Prompt neu + Regenerate"
+   * to re-run the rewrite + compose + augment chain. Plain "Neu generieren"
+   * uses the current (stale) imagePrompt.
+   */
+  updateSelectedVariants: publicProcedure
+    .input(z.object({
+      slideId: z.number().int().positive(),
+      selectedVariants: z.record(z.string(), z.string()),
+    }))
+    .mutation(async ({ input }) => {
+      const slide = await getSlideById(input.slideId);
+      if (!slide) throw new Error("Slide not found");
+
+      const existing = (slide.selectedVariants ?? {}) as Record<string, string>;
+      const merged: Record<string, string> = { ...existing };
+      for (const [k, v] of Object.entries(input.selectedVariants)) {
+        if (v === "") delete merged[k];
+        else merged[k] = v;
+      }
+
+      await updateSlide(input.slideId, {
+        selectedVariants: Object.keys(merged).length === 0 ? null : merged,
+        needsRegen: true,
+      });
+      return { success: true };
+    }),
+
   /** Reorder slides: array position (1-indexed) becomes the new slideNumber. */
   reorder: publicProcedure
     .input(z.object({ storyId: z.number(), slideIds: z.array(z.number()).min(1) }))
@@ -625,17 +785,119 @@ const storyRouter = router({
 
       await createSlides(storyId, plan.suggestedSlideCount);
 
+      // Pre-fetch every asset that could carry variants (character refs +
+      // scene environment refs) once, so per-slide compose calls don't each
+      // hit the DB. Keyed by id for O(1) lookup downstream.
+      const composeAssetIds = new Set<number>();
+      for (const c of consistencyContext.characters) {
+        if (c.assetId && c.assetId > 0) composeAssetIds.add(c.assetId);
+      }
+      for (const s of consistencyContext.scenes) {
+        if (s.environmentRefAssetId) composeAssetIds.add(s.environmentRefAssetId);
+      }
+      const composeAssets =
+        composeAssetIds.size > 0 ? await getAssetsByIds(Array.from(composeAssetIds)) : [];
+      const assetById = new Map(composeAssets.map((a) => [a.id, a]));
+
+      // Compose per-slide with bounded concurrency. Mirrors `generateAllImages`
+      // but capped at 4 — composer calls are pure LLM, no Atlas rate-limit.
+      const COMPOSE_CONCURRENCY = 4;
+      type ComposeOutcome = {
+        slideNumber: number;
+        imagePrompt: string;
+        selectedVariants: Record<string, string> | null;
+        composedActivities: Record<string, string> | null;
+        sceneActivityNotes: string | null;
+      };
+      const outcomes: ComposeOutcome[] = [];
+      let composeCursor = 0;
+      async function composeWorker() {
+        while (composeCursor < slides.length) {
+          const slide = slides[composeCursor++];
+          const sceneId =
+            slide.sceneId ??
+            findSceneForSlide(consistencyContext, slide.slideNumber)?.id ??
+            null;
+          const scene = sceneId
+            ? consistencyContext.scenes.find((s) => s.id === sceneId) ?? null
+            : null;
+          try {
+            const composed = await composeAndAugmentSlide({
+              slide: {
+                slideNumber: slide.slideNumber,
+                textContent: slide.textContent,
+                imagePrompt: slide.imagePrompt,
+                charactersInSlide: slide.charactersInSlide,
+                sceneId,
+              },
+              scene,
+              storyTheme: input.theme,
+              characters: consistencyContext.characters,
+              assetById,
+              model: input.model,
+            });
+            if (!composed) {
+              outcomes.push({
+                slideNumber: slide.slideNumber,
+                imagePrompt: slide.imagePrompt,
+                selectedVariants: null,
+                composedActivities: null,
+                sceneActivityNotes: null,
+              });
+              continue;
+            }
+            console.log(
+              `[composeSlideAction] slide ${slide.slideNumber} picks:`,
+              composed.composition.variantsByCharacter,
+              "activities:",
+              composed.composition.activitiesByCharacter,
+              "reasoning:",
+              composed.composition.reasoning,
+            );
+            outcomes.push({
+              slideNumber: slide.slideNumber,
+              imagePrompt: composed.imagePrompt,
+              selectedVariants: composed.selectedVariants,
+              composedActivities: composed.composedActivities,
+              sceneActivityNotes: composed.sceneActivityNotes,
+            });
+          } catch (err) {
+            console.warn(
+              `[composeSlideAction] slide ${slide.slideNumber} failed, persisting null compose data:`,
+              err instanceof Error ? err.message : err,
+            );
+            outcomes.push({
+              slideNumber: slide.slideNumber,
+              imagePrompt: slide.imagePrompt,
+              selectedVariants: null,
+              composedActivities: null,
+              sceneActivityNotes: null,
+            });
+          }
+        }
+      }
+      await Promise.all(
+        Array.from({ length: Math.min(COMPOSE_CONCURRENCY, slides.length) }, () =>
+          composeWorker(),
+        ),
+      );
+      const outcomeByNumber = new Map(outcomes.map((o) => [o.slideNumber, o]));
+
       for (const slide of slides) {
         // Compute sceneId at write time from the planner's slideRange so each
         // slide row gets a stable per-slide scene FK. See design doc §3c.
         const sceneId =
           slide.sceneId ?? findSceneForSlide(consistencyContext, slide.slideNumber)?.id ?? null;
+        const outcome = outcomeByNumber.get(slide.slideNumber);
         await updateSlideByStoryAndNumber(storyId, slide.slideNumber, {
           textContent: slide.textContent,
           caption: slide.caption,
           charactersInSlide: slide.charactersInSlide,
-          imagePrompt: slide.imagePrompt,
+          imagePrompt: outcome?.imagePrompt ?? slide.imagePrompt,
           sceneId,
+          selectedVariants: outcome?.selectedVariants ?? null,
+          composedActivities: outcome?.composedActivities ?? null,
+          sceneActivityNotes: outcome?.sceneActivityNotes ?? null,
           status: "pending",
         });
       }
@@ -1051,13 +1313,71 @@ const generateRouter = router({
         model: story.model,
       });
 
-      await updateSlide(input.slideId, { imagePrompt: newImagePrompt, status: "generating" });
+      // Re-run composer against the rewritten prompt so the augmented
+      // "Character details:" block tracks the current scene/context.
+      const slideCharacters = (slide.charactersInSlide as string[]) ?? [];
+      const composeAssetIds = new Set<number>();
+      for (const c of ctx.characters) {
+        if (c.assetId && c.assetId > 0) composeAssetIds.add(c.assetId);
+      }
+      if (scene?.environmentRefAssetId) composeAssetIds.add(scene.environmentRefAssetId);
+      const composeAssets =
+        composeAssetIds.size > 0 ? await getAssetsByIds(Array.from(composeAssetIds)) : [];
+      const assetById = new Map(composeAssets.map((a) => [a.id, a]));
+
+      let finalPrompt = newImagePrompt;
+      let selectedVariants: Record<string, string> | null = null;
+      let composedActivities: Record<string, string> | null = null;
+      let sceneActivityNotes: string | null = null;
+      try {
+        const composed = await composeAndAugmentSlide({
+          slide: {
+            slideNumber: slide.slideNumber,
+            textContent: slide.textContent ?? "",
+            imagePrompt: newImagePrompt,
+            charactersInSlide: slideCharacters,
+            sceneId: slide.sceneId ?? null,
+          },
+          scene,
+          storyTheme: story.theme ?? "",
+          characters: ctx.characters,
+          assetById,
+          model: story.model,
+        });
+        if (composed) {
+          console.log(
+            `[composeSlideAction] slide ${slide.slideNumber} (regenerate) picks:`,
+            composed.composition.variantsByCharacter,
+            "activities:",
+            composed.composition.activitiesByCharacter,
+            "reasoning:",
+            composed.composition.reasoning,
+          );
+          finalPrompt = composed.imagePrompt;
+          selectedVariants = composed.selectedVariants;
+          composedActivities = composed.composedActivities;
+          sceneActivityNotes = composed.sceneActivityNotes;
+        }
+      } catch (err) {
+        console.warn(
+          `[composeSlideAction] slide ${slide.slideNumber} (regenerate) failed:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+
+      await updateSlide(input.slideId, {
+        imagePrompt: finalPrompt,
+        selectedVariants,
+        composedActivities,
+        sceneActivityNotes,
+        status: "generating",
+      });
 
       // Re-fetch slide to use the freshly-saved prompt + propagate to image gen.
       const refreshed = await getSlideById(input.slideId);
       if (!refreshed) throw new Error("Slide vanished after prompt write");
 
-      const result = await regenerateSlideImage(refreshed, story, ctx, newImagePrompt);
+      const result = await regenerateSlideImage(refreshed, story, ctx, finalPrompt);
       await updateSlide(input.slideId, {
         imageKey: result.imageKey,
         imageUrl: result.imageUrl,
@@ -1066,7 +1386,7 @@ const generateRouter = router({
         needsRegen: false,
       });
 
-      return { success: true, newImagePrompt, imageUrl: result.imageUrl };
+      return { success: true, newImagePrompt: finalPrompt, imageUrl: result.imageUrl };
     }),
 
   getSlides: publicProcedure

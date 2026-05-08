@@ -206,6 +206,18 @@ export const slides = mysqlTable(
      * knows which panel to feed Atlas. Null = use the full sheet (legacy).
      */
     selectedVariants: json("selectedVariants").$type<Record<string, string>>(),
+    /**
+     * Per-character German activity strings produced by composeSlideAction.
+     * Keys = character names (matching `charactersInSlide`). Folded into
+     * `imagePrompt` at compose time; persisted separately so the UI can show
+     * "Toni · cooking-apron · hält Grillzange" without parsing the prompt.
+     */
+    composedActivities: json("composedActivities").$type<Record<string, string>>(),
+    /**
+     * Optional scene-level mood note from composeSlideAction
+     * (e.g. "warmes Spätsommer-Sonnenlicht, leichter Wind"). Free string.
+     */
+    sceneActivityNotes: text("sceneActivityNotes"),
     errorMessage: text("errorMessage"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
