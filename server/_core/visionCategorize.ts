@@ -258,7 +258,7 @@ const VARIANT_AXES = ["outfit", "age", "environment-moment", "pose", "composite"
 const EXTRACT_VARIANTS_TOOL = {
   name: "extract_sheet_variants",
   description:
-    "Locate every variant panel on a multi-variant sheet (character outfits, age stages, environment moments). Returns an empty list when the sheet has no variants.",
+    "List every variant visible on a multi-variant sheet (character outfits, age stages, environment moments). Returns an empty list when the sheet has no variants.",
   input_schema: {
     type: "object" as const,
     properties: {
@@ -269,19 +269,12 @@ const EXTRACT_VARIANTS_TOOL = {
           properties: {
             name: { type: "string", description: "snake_case identifier, unique within the sheet" },
             axis: { type: "string", enum: [...VARIANT_AXES] },
-            bbox: {
-              type: "array",
-              items: { type: "integer", minimum: 0 },
-              minItems: 4,
-              maxItems: 4,
-              description: "[x, y, w, h] in pixel coordinates relative to the sheet",
-            },
-            description: { type: "string", description: "German free text description" },
+            description: { type: "string", description: "German free text description, 1 short sentence" },
             ageRange: { type: "string" },
             season: { type: "string" },
             mood: { type: "string" },
           },
-          required: ["name", "axis", "bbox", "description"],
+          required: ["name", "axis", "description"],
         },
       },
     },
@@ -291,7 +284,7 @@ const EXTRACT_VARIANTS_TOOL = {
 
 const EXTRACT_VARIANTS_SYSTEM = `Du bist ein Sheet-Analyst für eine deutsche Instagram-Carousel-App. Ein Sheet kann mehrere Panels mit Varianten desselben Charakters / Ortes / Konzepts enthalten.
 
-AUFGABE: Identifiziere alle echten Varianten-Panels auf dem Sheet via tool_use.
+AUFGABE: Liste alle echten Varianten auf dem Sheet via tool_use — kurz beschrieben pro Panel. Keine Koordinaten / kein Cropping.
 
 SKIP (nicht als Varianten zählen):
 - Farbpaletten / color swatches
@@ -300,7 +293,7 @@ SKIP (nicht als Varianten zählen):
 - Logos / Marken
 - Reine Hintergrund-Texturen
 
-PRO PANEL ERFASSEN:
+PRO VARIANTE ERFASSEN:
 - name: snake_case-Identifier, eindeutig pro Sheet (z.B. "cooking-apron", "winter-coat", "morning-light")
 - axis:
   - "outfit"              für Klamotten-Varianten desselben Charakters
@@ -308,15 +301,13 @@ PRO PANEL ERFASSEN:
   - "environment-moment"  für Umgebungs-Varianten (morgens / abends / Sommer / Winter)
   - "pose"                wenn Outfit identisch aber Pose/Aktion variiert (selten — meist skip)
   - "composite"           für Multi-Achsen-Panels (z.B. Alter × Outfit zugleich)
-- bbox: [x, y, w, h] in Pixel-Koordinaten relativ zum gesamten Sheet (top-left origin)
-- description: kurzer deutscher Beschreibungstext (1 Satz), prompt-ready
+- description: 1 kurzer deutscher Satz, prompt-ready ("Toni in karierter Kochschürze, breites Lachen")
 - ageRange: optional, z.B. "30s", "60+"
 - season: optional, z.B. "summer", "winter"
 - mood: optional, z.B. "neutral", "happy"
 
 WICHTIG:
 - Wenn das Sheet KEINE Variant-Matrix ist (Single-Pose-Portrait, Color-Palette only, Logo-Sheet, 360°-Turnaround) → leere variants[] zurückgeben.
-- Bbox MUSS innerhalb der Sheet-Dimensionen liegen (siehe User-Message für width/height).
 - Names MÜSSEN unique pro Sheet sein.`;
 
 function buildVariantUserContent(
@@ -325,8 +316,6 @@ function buildVariantUserContent(
     isCharacterSheet: boolean;
     assetCategory: string;
     visualDescription: string;
-    imageWidth: number;
-    imageHeight: number;
   },
 ): Anthropic.MessageParam["content"] {
   const imageBlock: Anthropic.ImageBlockParam =
@@ -345,7 +334,7 @@ function buildVariantUserContent(
     imageBlock,
     {
       type: "text",
-      text: `Sheet dimensions: ${context.imageWidth}x${context.imageHeight}px. Asset category: ${context.assetCategory}. isCharacterSheet: ${context.isCharacterSheet}. visualDescription: ${context.visualDescription}.
+      text: `Asset category: ${context.assetCategory}. isCharacterSheet: ${context.isCharacterSheet}. visualDescription: ${context.visualDescription}.
 
 Bitte analysiere das Sheet und rufe das Tool extract_sheet_variants auf. Wenn keine Varianten enthalten sind, gib leere variants[] zurück.`,
     },
@@ -355,7 +344,6 @@ Bitte analysiere das Sheet und rufe das Tool extract_sheet_variants auf. Wenn ke
 interface RawVariant {
   name: unknown;
   axis: unknown;
-  bbox: unknown;
   description: unknown;
   ageRange?: unknown;
   season?: unknown;
@@ -364,29 +352,18 @@ interface RawVariant {
 
 /**
  * Validate + normalise a single raw variant from Claude's tool_use output.
- * Returns null when the entry is unsalvageable (bbox out of bounds, wrong
- * shape, etc.) — caller logs and skips.
+ * Returns null when the entry is unsalvageable (missing name/axis/description,
+ * unknown axis). bbox is no longer extracted — full sheets always go to Atlas.
  */
-function normaliseVariant(
-  raw: RawVariant,
-  imageWidth: number,
-  imageHeight: number,
-): AssetVariant | null {
+function normaliseVariant(raw: RawVariant): AssetVariant | null {
   if (typeof raw.name !== "string" || raw.name.trim() === "") return null;
   if (typeof raw.axis !== "string") return null;
   if (!VARIANT_AXES.includes(raw.axis as (typeof VARIANT_AXES)[number])) return null;
-  if (typeof raw.description !== "string") return null;
-  if (!Array.isArray(raw.bbox) || raw.bbox.length !== 4) return null;
-
-  const [x, y, w, h] = raw.bbox.map((n) => (typeof n === "number" ? Math.round(n) : NaN));
-  if (![x, y, w, h].every((n) => Number.isFinite(n) && n >= 0)) return null;
-  if (w <= 0 || h <= 0) return null;
-  if (x + w > imageWidth || y + h > imageHeight) return null;
+  if (typeof raw.description !== "string" || raw.description.trim() === "") return null;
 
   return {
     name: raw.name.trim(),
     axis: raw.axis as AssetVariant["axis"],
-    bbox: [x, y, w, h],
     description: raw.description.trim(),
     ageRange: typeof raw.ageRange === "string" && raw.ageRange ? raw.ageRange : undefined,
     season: typeof raw.season === "string" && raw.season ? raw.season : undefined,
@@ -405,10 +382,16 @@ function dedupeVariantNames(variants: AssetVariant[]): AssetVariant[] {
 }
 
 /**
- * Ask Claude to locate every variant panel on a multi-variant sheet. Used
- * during asset upload (and in `scripts/backfill-asset-variants.ts`) to
- * populate `assets.variants`. Robust to sheets that aren't actually variant
- * matrices: returns `[]` rather than throwing.
+ * Ask Claude to list every variant on a multi-variant sheet. Used during
+ * asset upload (and in `scripts/backfill-asset-variants.ts`) to populate
+ * `assets.variants`. Robust to sheets that aren't actually variant matrices:
+ * returns `[]` rather than throwing.
+ *
+ * v2 (post-cropping-redesign): no bbox, no cropping. The full sheet always
+ * flows to Atlas; the composer LLM picks the variant from prompt context.
+ * The `imageWidth` / `imageHeight` context fields are accepted but unused
+ * (kept for caller compatibility — backfill script and upload path both
+ * still pass them).
  */
 export async function extractVariantsFromSheet(
   imageSource: { type: "url"; url: string } | { type: "base64"; mediaType: string; data: string },
@@ -416,8 +399,8 @@ export async function extractVariantsFromSheet(
     isCharacterSheet: boolean;
     assetCategory: string;
     visualDescription: string;
-    imageWidth: number;
-    imageHeight: number;
+    imageWidth?: number;
+    imageHeight?: number;
   },
 ): Promise<AssetVariant[]> {
   const client = getAnthropicClient();
@@ -449,7 +432,7 @@ export async function extractVariantsFromSheet(
   const out: AssetVariant[] = [];
   for (const r of raw) {
     if (!r || typeof r !== "object") continue;
-    const v = normaliseVariant(r as RawVariant, context.imageWidth, context.imageHeight);
+    const v = normaliseVariant(r as RawVariant);
     if (v) out.push(v);
     else console.warn(`[extractVariantsFromSheet] skipping invalid variant entry: ${JSON.stringify(r)}`);
   }

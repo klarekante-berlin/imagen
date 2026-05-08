@@ -103,22 +103,26 @@ export interface StoryPlan {
 // ─── Asset Variants ───────────────────────────────────────────────────────────
 
 /**
- * A single panel cropped out of a multi-variant sheet (character outfits,
- * age stages, environment moments, etc.). Populated by Vision at upload time;
+ * A single panel/variant on a multi-variant sheet (character outfits, age
+ * stages, environment moments, etc.). Populated by Vision at upload time;
  * Branch B additionally fills `embedding` for RAG-style selection.
+ *
+ * Note: bbox was required in v1 (panel-level cropping) but is now optional —
+ * the full sheet always goes to Atlas and gpt-image-2 picks the variant from
+ * prompt context. bbox is kept for future UI overlay but never gates anything.
  */
 export interface AssetVariant {
   /** snake_case identifier within the sheet, e.g. "cooking-apron". Unique per asset. */
   name: string;
   axis: "outfit" | "age" | "environment-moment" | "pose" | "composite";
-  /** [x, y, w, h] in pixels relative to the source sheet. */
-  bbox: [number, number, number, number];
   /** German free-text description used in prompts. */
   description: string;
   /** Optional facets used by selectors (Branch A/B). */
   ageRange?: string;
   season?: string;
   mood?: string;
+  /** [x, y, w, h] in pixels — optional, future UI overlay only. */
+  bbox?: [number, number, number, number] | null;
   /** Populated only by Branch B (Voyage). Base + Branch A leave this undefined. */
   embedding?: number[];
 }
