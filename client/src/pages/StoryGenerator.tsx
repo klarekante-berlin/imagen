@@ -13,12 +13,12 @@ import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import {
   Sparkles, Wand2, Users, ChevronDown, ChevronUp, ImageIcon,
-  Loader2, MapPin, ChevronRight,
+  Loader2, MapPin, ChevronRight, Palette,
 } from "lucide-react";
 
 // ─── Types matching server/storyPlanner.ts ────────────────────────────────────
 
-import type { Scene, DetectedEntity } from "@shared/types";
+import type { Scene, DetectedEntity, Asset } from "@shared/types";
 
 interface PlanState {
   title: string;
@@ -42,6 +42,8 @@ export default function StoryGenerator() {
   const [pickerCategory, setPickerCategory] = useState<string>("");
   const [scenesOpen, setScenesOpen] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [styleRefsOpen, setStyleRefsOpen] = useState(true);
+  const [excludedStyleRefIds, setExcludedStyleRefIds] = useState<Set<number>>(new Set());
   const [customSystemPrompt, setCustomSystemPrompt] = useState("");
   const [customUserPromptPrefix, setCustomUserPromptPrefix] = useState("");
 
@@ -50,6 +52,7 @@ export default function StoryGenerator() {
     { enabled: showAssetPicker !== null },
   );
   const { data: categories } = trpc.assets.categories.useQuery();
+  const { data: styleRefAssets } = trpc.assets.list.useQuery({ category: "stil-referenz" });
 
   const planMutation = trpc.stories.plan.useMutation();
   const generateMutation = trpc.stories.generate.useMutation();
@@ -110,6 +113,9 @@ export default function StoryGenerator() {
           })),
         },
         selectedAssetIdsByEntity: overridesByName,
+        excludedStyleRefAssetIds: excludedStyleRefIds.size > 0
+          ? Array.from(excludedStyleRefIds)
+          : undefined,
         model,
         imageFormat,
         imageProvider: "gpt-image-2",
@@ -121,7 +127,7 @@ export default function StoryGenerator() {
     } catch (err) {
       toast.error("Fehler: " + (err instanceof Error ? err.message : "Unbekannt"));
     }
-  }, [theme, plan, model, imageFormat, generateMutation, navigate, customSystemPrompt, customUserPromptPrefix]);
+  }, [theme, plan, model, imageFormat, generateMutation, navigate, customSystemPrompt, customUserPromptPrefix, excludedStyleRefIds]);
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -463,6 +469,23 @@ export default function StoryGenerator() {
               </div>
             </div>
 
+            {/* Style references — visualize what will flow into image gen */}
+            <StyleRefsPanel
+              assets={styleRefAssets ?? []}
+              excludedIds={excludedStyleRefIds}
+              onToggle={(id) =>
+                setExcludedStyleRefIds((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(id)) next.delete(id);
+                  else next.add(id);
+                  return next;
+                })
+              }
+              open={styleRefsOpen}
+              onToggleOpen={() => setStyleRefsOpen((o) => !o)}
+              onOpenLibrary={() => navigate("/library")}
+            />
+
             <Button
               onClick={handleGenerate}
               disabled={!plan || isGenerating}
@@ -498,6 +521,99 @@ function StepHeader({ n, label }: { n: number; label: string }) {
     <div className="flex items-center gap-2 mb-1">
       <div className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold shrink-0">{n}</div>
       <span className="font-semibold text-sm">{label}</span>
+    </div>
+  );
+}
+
+/**
+ * Visualizes which stil-referenz assets will flow into the image-gen prompt.
+ * Click a thumbnail to toggle exclude/include. Excluded thumbs render faded
+ * with a destructive ring; the live counter reflects the active set.
+ */
+function StyleRefsPanel({
+  assets,
+  excludedIds,
+  onToggle,
+  open,
+  onToggleOpen,
+  onOpenLibrary,
+}: {
+  assets: Asset[];
+  excludedIds: Set<number>;
+  onToggle: (id: number) => void;
+  open: boolean;
+  onToggleOpen: () => void;
+  onOpenLibrary: () => void;
+}) {
+  const total = assets.length;
+  const active = assets.filter((a) => !excludedIds.has(a.id)).length;
+  const allExcluded = total > 0 && active === 0;
+
+  return (
+    <div className="border-t border-border/40 pt-3 space-y-2">
+      <button
+        onClick={onToggleOpen}
+        className="flex items-center gap-2 text-sm font-medium hover:text-primary transition-colors"
+      >
+        {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        <Palette className="w-4 h-4" />
+        Style-Referenzen
+        <span className="text-xs text-muted-foreground font-normal">
+          ({total === 0 ? "keine" : `${active} von ${total} aktiv`})
+        </span>
+      </button>
+
+      {open && (
+        <>
+          {total === 0 ? (
+            <div className="p-3 rounded-lg bg-background/30 border border-border/40 text-xs text-muted-foreground flex items-center justify-between gap-2">
+              <span>Keine Stil-Referenzen in der Library.</span>
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onOpenLibrary}>
+                Library öffnen
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {allExcluded && (
+                <div className="text-[11px] p-2 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-300">
+                  Alle Stil-Referenzen ausgeschlossen — Output wird ohne style refs generiert.
+                </div>
+              )}
+              <p className="text-[11px] text-muted-foreground">
+                Klick auf ein Thumbnail um es vom Bild-Gen auszuschließen.
+              </p>
+              <div className="grid grid-cols-6 gap-1.5">
+                {assets.map((asset) => {
+                  const excluded = excludedIds.has(asset.id);
+                  return (
+                    <button
+                      key={asset.id}
+                      onClick={() => onToggle(asset.id)}
+                      className={`aspect-square rounded-lg overflow-hidden border transition-all relative group ${
+                        excluded
+                          ? "border-destructive/50 ring-2 ring-destructive/40 opacity-40"
+                          : "border-border/30 hover:border-primary/60"
+                      }`}
+                      title={`${asset.name}${excluded ? " (ausgeschlossen)" : ""}`}
+                    >
+                      {asset.imageUrl ? (
+                        <img src={asset.imageUrl} alt={asset.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full bg-muted/30 flex items-center justify-center">
+                          <ImageIcon className="w-3 h-3 text-muted-foreground/30" />
+                        </div>
+                      )}
+                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-1">
+                        <span className="text-[8px] text-white leading-tight line-clamp-2">{asset.name}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
