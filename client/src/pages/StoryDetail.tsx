@@ -48,6 +48,7 @@ import {
   LayersIcon,
   CheckIcon,
   WandSparklesIcon,
+  FileJsonIcon,
 } from "lucide-react";
 import type { Slide } from "../../../drizzle/schema";
 import { STATUS_CONFIG } from "@/const";
@@ -283,6 +284,48 @@ export default function StoryDetail() {
     setCtxGlobalStylePrompt(c.globalStylePrompt ?? "");
   }, [ctxEditOpen, story?.consistencyContext]);
 
+  // Keyboard nav: ←/→ steps through slides. Skip when typing in inputs.
+  const slideCount = story?.slides?.length ?? 0;
+  useEffect(() => {
+    function handler(e: KeyboardEvent) {
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || t?.isContentEditable) return;
+      if (e.key === "ArrowLeft") {
+        setActiveSlide((i) => (i > 0 ? i - 1 : i));
+      } else if (e.key === "ArrowRight") {
+        setActiveSlide((i) => (i < slideCount - 1 ? i + 1 : i));
+      }
+    }
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [slideCount]);
+
+  const handleExportJson = () => {
+    if (!story) return;
+    const payload = {
+      story: {
+        id: story.id,
+        title: story.title,
+        theme: story.theme,
+        status: story.status,
+        imageFormat: story.imageFormat,
+        imageProvider: story.imageProvider,
+      },
+      slides: story.slides ?? [],
+      consistencyContext: story.consistencyContext ?? null,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `story-${storyId}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   if (isLoading) {
     return (
       <AppLayout>
@@ -409,6 +452,10 @@ export default function StoryDetail() {
               ZIP exportieren ({completedSlides}/10)
             </Button>
           )}
+          <Button variant="outline" onClick={handleExportJson} className="gap-2">
+            <FileJsonIcon className="w-4 h-4" />
+            JSON exportieren
+          </Button>
           <Button
             variant="ghost"
             className="gap-2 text-destructive hover:text-destructive"
