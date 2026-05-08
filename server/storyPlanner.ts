@@ -622,7 +622,19 @@ export async function writeStorySlides(input: WriteInput): Promise<{
   // Reflection pass: have Claude self-critique and re-emit the slides if needed.
   // Single 1-pass — no iterative loop. ~10s extra latency, sharper output.
   // If parse/validation fails, fall back to first response's slides.
+  // Anthropic requires that any assistant tool_use is followed by a user
+  // message containing the matching tool_result blocks.
   try {
+    const firstToolUseId = response.content.find(
+      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+    )?.id;
+    const reflectUserContent: Anthropic.MessageParam["content"] = firstToolUseId
+      ? [
+          { type: "tool_result", tool_use_id: firstToolUseId, content: "Slides empfangen — bitte prüfen." },
+          { type: "text", text: REFLECT_USER },
+        ]
+      : [{ type: "text", text: REFLECT_USER }];
+
     const reflection = await callClaudeWithRetry(
       client,
       {
@@ -636,7 +648,7 @@ export async function writeStorySlides(input: WriteInput): Promise<{
         messages: [
           { role: "user", content: userContent },
           { role: "assistant", content: response.content },
-          { role: "user", content: REFLECT_USER },
+          { role: "user", content: reflectUserContent },
         ],
       },
       "writeStorySlides.reflect",
