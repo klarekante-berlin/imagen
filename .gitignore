@@ -8,11 +8,6 @@ build/
 *.dist
 
 # Environment variables
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
 
 # IDE and editor files
 .vscode/
@@ -119,14 +114,10 @@ graphify-out/
 .manus-logs/
 
 # bulk-import source assets (large binaries, not source code)
-klarekante-style/
 import-errors.log
 
 # user-pasted slide screenshots / repro images at repo root
-slide-*.png
-slide-*.jpg
-slide-*.jpeg
+
 
 # local-dev stack (filesystem storage backend + dockerized mysql data)
-storage-data/
 docker-data/
