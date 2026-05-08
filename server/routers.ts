@@ -17,6 +17,7 @@ import {
   getPresignedStorageUrl,
   normalizeConsistencyContext,
   findSceneForSlide,
+  deriveSceneSlideRanges,
 } from "./storyService";
 import { planStory, rewriteSlideImagePrompt, writeStorySlides } from "./storyPlanner";
 import type { ConsistencyCharacterRef, ConsistencyContext, Scene, StoryPlan } from "@shared/types";
@@ -370,7 +371,15 @@ const storyRouter = router({
       const story = await getStoryById(input.id);
       if (!story) return null;
       const storySlides = await getSlidesByStoryId(input.id);
-      return { ...story, slides: storySlides };
+      // Read-time derive: per-slide `sceneId` is the source of truth for
+      // scene membership; recompute `Scene.slideRange` from the slides so
+      // post-reassign / post-reorder data stays sane. Stored JSON may have
+      // stale ranges — we never write back here. See design doc §6.
+      const ctx = normalizeConsistencyContext(story.consistencyContext);
+      const consistencyContext = ctx
+        ? { ...ctx, scenes: deriveSceneSlideRanges(ctx.scenes, storySlides) }
+        : story.consistencyContext;
+      return { ...story, consistencyContext, slides: storySlides };
     }),
 
   /** Stage 1 — return a StoryPlan for the UI to confirm. No DB write. */

@@ -1,4 +1,4 @@
-import { Asset, ImageFormat } from "../drizzle/schema";
+import { Asset, ImageFormat, Slide } from "../drizzle/schema";
 import type {
   ConsistencyContext,
   ConsistencyContextV1,
@@ -68,6 +68,36 @@ export function findSceneForSlide(
       (s) => slideNumber >= s.slideRange[0] && slideNumber <= s.slideRange[1],
     ) ?? ctx.scenes[0]
   );
+}
+
+/**
+ * Recompute each scene's `slideRange` from the actual per-slide `sceneId`
+ * assignments. Per-slide `sceneId` is the source of truth post-reassign;
+ * the JSON-stored `slideRange` is treated as a derived cache that may go
+ * stale after slide moves/reorders. Empty scenes get `[0, 0]`.
+ *
+ * Note: ranges may be non-contiguous after reassigns (e.g. slides 1,2,4
+ * in scene-1, 3 in scene-2). We still report `[min, max]` because the
+ * type forces a tuple; callers that need the full membership should
+ * filter slides directly by `sceneId`.
+ */
+export function deriveSceneSlideRanges(
+  scenes: Scene[],
+  slides: Slide[],
+): Scene[] {
+  return scenes.map((s) => {
+    const numbers = slides
+      .filter((sl) => sl.sceneId === s.id)
+      .map((sl) => sl.slideNumber)
+      .sort((a, b) => a - b);
+    if (numbers.length === 0) {
+      return { ...s, slideRange: [0, 0] as [number, number] };
+    }
+    return {
+      ...s,
+      slideRange: [numbers[0], numbers[numbers.length - 1]] as [number, number],
+    };
+  });
 }
 
 // ─── Atlas Cloud Image Generation (gpt-image-2) ───────────────────────────────
