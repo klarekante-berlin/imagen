@@ -104,6 +104,7 @@ export const assets = mysqlTable(
   },
   (t) => ({
     characterIdx: index("assets_character_idx").on(t.characterId),
+    categoryIdx: index("assets_category_idx").on(t.category),
     contentHashIdx: uniqueIndex("assets_content_hash_idx").on(t.contentHash),
     reviewStatusIdx: index("assets_review_status_idx").on(t.reviewStatus),
     sourcePathIdx: index("assets_source_path_idx").on(t.sourcePath),
@@ -127,51 +128,64 @@ export type AiModel = (typeof AI_MODELS)[number];
 export const IMAGE_PROVIDERS = ["gpt-image-2", "freepik"] as const;
 export type ImageProvider = (typeof IMAGE_PROVIDERS)[number];
 
-export const stories = mysqlTable("stories", {
-  id: int("id").autoincrement().primaryKey(),
-  title: varchar("title", { length: 512 }).notNull(),
-  theme: text("theme").notNull(),
-  status: mysqlEnum("status", STORY_STATUSES).default("draft").notNull(),
-  model: mysqlEnum("model", AI_MODELS).default("claude-sonnet-4-6").notNull(),
-  imageProvider: mysqlEnum("imageProvider", IMAGE_PROVIDERS).default("gpt-image-2").notNull(),
-  imageFormat: mysqlEnum("imageFormat", IMAGE_FORMATS).default("1:1").notNull(),
-  /**
-   * Consistency context (JSON). Shape evolves over time — read through
-   * `normalizeConsistencyContext()` so legacy v1 payloads upgrade to v2.
-   */
-  consistencyContext: json("consistencyContext").$type<unknown>(),
-  /** IDs of assets used in this story */
-  usedAssetIds: json("usedAssetIds").$type<number[]>(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+export const stories = mysqlTable(
+  "stories",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    title: varchar("title", { length: 512 }).notNull(),
+    theme: text("theme").notNull(),
+    status: mysqlEnum("status", STORY_STATUSES).default("draft").notNull(),
+    model: mysqlEnum("model", AI_MODELS).default("claude-sonnet-4-6").notNull(),
+    imageProvider: mysqlEnum("imageProvider", IMAGE_PROVIDERS).default("gpt-image-2").notNull(),
+    imageFormat: mysqlEnum("imageFormat", IMAGE_FORMATS).default("1:1").notNull(),
+    /**
+     * Consistency context (JSON). Shape evolves over time — read through
+     * `normalizeConsistencyContext()` so legacy v1 payloads upgrade to v2.
+     */
+    consistencyContext: json("consistencyContext").$type<unknown>(),
+    /** IDs of assets used in this story */
+    usedAssetIds: json("usedAssetIds").$type<number[]>(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    statusIdx: index("stories_status_idx").on(t.status),
+    createdAtIdx: index("stories_created_at_idx").on(t.createdAt),
+  })
+);
 
 export type Story = typeof stories.$inferSelect;
 export type InsertStory = typeof stories.$inferInsert;
 
 // ─── Slides ───────────────────────────────────────────────────────────────────
 
-export const slides = mysqlTable("slides", {
-  id: int("id").autoincrement().primaryKey(),
-  storyId: int("storyId").notNull(),
-  slideNumber: int("slideNumber").notNull(), // 1–10
-  /** Scene/dialogue text shown on the slide */
-  textContent: text("textContent"),
-  /** Caption/dialogue for the image */
-  caption: text("caption"),
-  /** Characters appearing in this specific slide */
-  charactersInSlide: json("charactersInSlide").$type<string[]>(),
-  /** Full image generation prompt */
-  imagePrompt: text("imagePrompt"),
-  /** S3 key for generated image */
-  imageKey: varchar("imageKey", { length: 512 }),
-  /** Public URL for generated image */
-  imageUrl: varchar("imageUrl", { length: 1024 }),
-  status: mysqlEnum("status", ["pending", "generating", "complete", "error"]).default("pending").notNull(),
-  errorMessage: text("errorMessage"),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+export const slides = mysqlTable(
+  "slides",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    storyId: int("storyId").notNull(),
+    slideNumber: int("slideNumber").notNull(), // 1–10
+    /** Scene/dialogue text shown on the slide */
+    textContent: text("textContent"),
+    /** Caption/dialogue for the image */
+    caption: text("caption"),
+    /** Characters appearing in this specific slide */
+    charactersInSlide: json("charactersInSlide").$type<string[]>(),
+    /** Full image generation prompt */
+    imagePrompt: text("imagePrompt"),
+    /** S3 key for generated image */
+    imageKey: varchar("imageKey", { length: 512 }),
+    /** Public URL for generated image */
+    imageUrl: varchar("imageUrl", { length: 1024 }),
+    status: mysqlEnum("status", ["pending", "generating", "complete", "error"]).default("pending").notNull(),
+    errorMessage: text("errorMessage"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    storyIdx: index("slides_story_idx").on(t.storyId),
+  })
+);
 
 export type Slide = typeof slides.$inferSelect;
 export type InsertSlide = typeof slides.$inferInsert;
