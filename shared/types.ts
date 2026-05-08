@@ -53,6 +53,12 @@ export interface ConsistencyContextV2 {
   styleReferenceUrls?: string[];
   worldBuiltAssetIds: number[];
   slideCount: number;             // 3..10
+  /**
+   * Asset IDs (category=stil-referenz) explicitly excluded by the user at
+   * generate time. generateAllImages / regenerateSlide drop these from the
+   * `styleRefAssets` set before passing to the model.
+   */
+  excludedStyleRefAssetIds?: number[];
 }
 
 /** Default export is v2. v1 kept under an explicit alias. */

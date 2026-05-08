@@ -394,6 +394,7 @@ const storyRouter = router({
         })),
       }),
       selectedAssetIdsByEntity: z.record(z.string(), z.number().nullable()).optional(),
+      excludedStyleRefAssetIds: z.array(z.number().int().positive()).optional(),
       model: z.enum(["claude-sonnet-4-6", "claude-opus-4-5"]).default("claude-sonnet-4-6"),
       imageFormat: z.enum(["1:1", "4:5"]).default("1:1"),
       imageProvider: z.enum(["gpt-image-2", "freepik"]).default("gpt-image-2"),
@@ -483,8 +484,14 @@ const storyRouter = router({
       // Style references — persist relative paths only (avoids data: URIs
       // bloating consistencyContext past max_allowed_packet). generateAllImages
       // re-resolves to data URIs / presigned URLs at render time.
+      // User-excluded style refs (per ConsistencyContextV2.excludedStyleRefAssetIds)
+      // are filtered out here so they never enter the prompt context.
+      const excludedStyleRefAssetIds = input.excludedStyleRefAssetIds ?? [];
+      const excludedSet = new Set(excludedStyleRefAssetIds);
       const allAssets = await getAssets();
-      const styleAssets = allAssets.filter((a) => a.category === "stil-referenz");
+      const styleAssets = allAssets
+        .filter((a) => a.category === "stil-referenz")
+        .filter((a) => !excludedSet.has(a.id));
       const styleReferenceUrls = styleAssets.map((a) => a.imageUrl).filter((u): u is string => !!u);
       for (const a of styleAssets) usedAssetIds.push(a.id);
 
@@ -498,6 +505,12 @@ const storyRouter = router({
         customSystemPrompt: input.customSystemPrompt,
         customUserPromptPrefix: input.customUserPromptPrefix,
       });
+
+      // Persist exclusion list on consistencyContext so generateAllImages /
+      // regenerateSlide can re-apply it on every regeneration.
+      if (excludedStyleRefAssetIds.length > 0) {
+        consistencyContext.excludedStyleRefAssetIds = excludedStyleRefAssetIds;
+      }
 
       const storyId = await createStory({
         title: plan.title,
@@ -660,9 +673,13 @@ const generateRouter = router({
           `[generate] ${presignAttempts} character ref(s) skipped — no public URL available (STORAGE_BACKEND=local has no presign). Falling back to text-only character descriptions in prompt.`,
         );
       }
-      // Style references: all stil-referenz assets in this story (incl. typo/font sheets).
+      // Style references: all stil-referenz assets in this story (incl. typo/font sheets),
+      // minus any explicitly excluded by the user at story-creation time.
       // Smart-fill below picks the right mix per slide.
-      const styleRefAssets = usedAssets.filter((a) => a.category === "stil-referenz");
+      const excludedStyleIds = new Set(ctx.excludedStyleRefAssetIds ?? []);
+      const styleRefAssets = usedAssets
+        .filter((a) => a.category === "stil-referenz")
+        .filter((a) => !excludedStyleIds.has(a.id));
       const styleReferenceUrls = (
         await Promise.all(styleRefAssets.map((a) => getPresignedStorageUrl(a.imageUrl ?? "")))
       ).filter((u): u is string => !!u);
@@ -768,8 +785,12 @@ const generateRouter = router({
         .filter((url): url is string => !!url)
         .slice(0, 3);
 
-      // All stil-referenz assets — generateSlideImage decides how many to actually pass
-      const styleRefAssets = usedAssets.filter((a) => a.category === "stil-referenz");
+      // All stil-referenz assets minus user-excluded ones — generateSlideImage
+      // decides how many to actually pass.
+      const excludedStyleIds = new Set(ctx.excludedStyleRefAssetIds ?? []);
+      const styleRefAssets = usedAssets
+        .filter((a) => a.category === "stil-referenz")
+        .filter((a) => !excludedStyleIds.has(a.id));
       const styleReferenceUrls = (
         await Promise.all(styleRefAssets.map((a) => getPresignedStorageUrl(a.imageUrl ?? "")))
       ).filter((u): u is string => !!u);
