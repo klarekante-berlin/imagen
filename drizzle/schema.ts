@@ -184,6 +184,12 @@ export const slides = mysqlTable(
     /** Public URL for generated image */
     imageUrl: varchar("imageUrl", { length: 1024 }),
     status: mysqlEnum("status", ["pending", "generating", "complete", "error"]).default("pending").notNull(),
+    /**
+     * Set true when the slide's prompt context has drifted from the rendered
+     * image (scene reassigned, scene env edited, prompt edited). Reset by
+     * `regenerateSlide`. Drives the "Regenerate to apply" hint in the UI.
+     */
+    needsRegen: boolean("needsRegen").notNull().default(false),
     errorMessage: text("errorMessage"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

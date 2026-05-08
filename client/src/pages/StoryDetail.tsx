@@ -75,33 +75,20 @@ export default function StoryDetail() {
     onError: (err) => toast.error(`Fehler: ${err.message}`),
   });
 
-  // Slide IDs whose scene was reassigned in this session — used to show the
-  // "Regenerate to apply" yellow strip. Cleared per-slide on regen success.
-  const [recentlyMovedSlideIds, setRecentlyMovedSlideIds] = useState<Set<number>>(new Set());
-
   const regenerateSlide = trpc.generate.regenerateSlide.useMutation({
-    onSuccess: (_data, vars) => {
+    onSuccess: () => {
       toast.success("Slide neu generiert!");
+      // The yellow strip auto-disappears via the refreshed slide.needsRegen=false.
       utils.stories.get.invalidate({ id: storyId });
-      setRecentlyMovedSlideIds((prev) => {
-        if (!prev.has(vars.slideId)) return prev;
-        const next = new Set(prev);
-        next.delete(vars.slideId);
-        return next;
-      });
     },
     onError: (err) => toast.error(`Fehler: ${err.message}`),
   });
 
   const assignScene = trpc.slides.assignScene.useMutation({
-    onSuccess: (_data, vars) => {
+    onSuccess: () => {
       toast.success("Slide neuer Scene zugewiesen");
+      // Server flips slide.needsRegen=true; UI re-reads after invalidate.
       utils.stories.get.invalidate({ id: storyId });
-      setRecentlyMovedSlideIds((prev) => {
-        const next = new Set(prev);
-        next.add(vars.slideId);
-        return next;
-      });
       setScenePopoverOpen(false);
     },
     onError: (err) => toast.error(`Fehler: ${err.message}`),
@@ -158,6 +145,24 @@ export default function StoryDetail() {
     onError: (err) => toast.error(`Fehler: ${err.message}`),
   });
 
+  const updateScene = trpc.stories.updateScene.useMutation({
+    onSuccess: () => {
+      toast.success("Scene gespeichert");
+      utils.stories.get.invalidate({ id: storyId });
+      setSceneEditId(null);
+    },
+    onError: (err) => toast.error(`Fehler: ${err.message}`),
+  });
+
+  const removeScene = trpc.stories.removeScene.useMutation({
+    onSuccess: () => {
+      toast.success("Scene entfernt");
+      utils.stories.get.invalidate({ id: storyId });
+      setRemoveSceneId(null);
+    },
+    onError: (err) => toast.error(`Fehler: ${err.message}`),
+  });
+
   // Slide-edit dialog state
   const [editingSlideId, setEditingSlideId] = useState<number | null>(null);
   const [editTextContent, setEditTextContent] = useState("");
@@ -172,6 +177,15 @@ export default function StoryDetail() {
   const [ctxEditOpen, setCtxEditOpen] = useState(false);
   const [ctxColorPalette, setCtxColorPalette] = useState("");
   const [ctxGlobalStylePrompt, setCtxGlobalStylePrompt] = useState("");
+
+  // Scene-edit dialog state (per-scene environment / lock / transition)
+  const [sceneEditId, setSceneEditId] = useState<string | null>(null);
+  const [sceneEditEnv, setSceneEditEnv] = useState("");
+  const [sceneEditLock, setSceneEditLock] = useState("");
+  const [sceneEditTransition, setSceneEditTransition] = useState("");
+
+  // Scene-remove confirm state (sceneId of scene the user wants to drop).
+  const [removeSceneId, setRemoveSceneId] = useState<string | null>(null);
 
   const handleExportZip = async () => {
     if (!story?.slides) return;
@@ -416,7 +430,9 @@ export default function StoryDetail() {
                 </div>
               )}
 
-              {/* Per-scene listing — derived "Slides per scene" (read-only MVP). */}
+              {/* Per-scene listing — derived "Slides per scene". Each scene
+                  gets an edit pencil (env / lock / transition) and, when
+                  empty, a remove button. */}
               {scenes.length > 0 && (
                 <div className="mt-4 border-t border-border pt-3 space-y-2">
                   <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -427,6 +443,7 @@ export default function StoryDetail() {
                       .slice()
                       .sort((a, b) => a.slideNumber - b.slideNumber);
                     const numbers = sceneSlides.map((sl) => sl.slideNumber);
+                    const isEmpty = numbers.length === 0;
                     return (
                       <div key={s.id} className="bg-muted rounded-lg p-3 text-xs space-y-1">
                         <div className="flex items-start justify-between gap-2">
@@ -436,11 +453,34 @@ export default function StoryDetail() {
                               <span className="text-muted-foreground">{s.environment}</span>
                             )}
                           </div>
-                          <span className="text-[11px] text-muted-foreground whitespace-nowrap">
-                            {numbers.length === 0
-                              ? "0 slides — leer"
-                              : `${numbers.length} slide${numbers.length > 1 ? "s" : ""} · ${numbers.join(", ")}`}
-                          </span>
+                          <div className="flex items-center gap-1.5 whitespace-nowrap">
+                            <span className="text-[11px] text-muted-foreground">
+                              {isEmpty
+                                ? "0 slides — leer"
+                                : `${numbers.length} slide${numbers.length > 1 ? "s" : ""} · ${numbers.join(", ")}`}
+                            </span>
+                            {isEmpty && (
+                              <button
+                                onClick={() => setRemoveSceneId(s.id)}
+                                className="text-[11px] text-destructive hover:underline"
+                                title="Scene entfernen"
+                              >
+                                [entfernen]
+                              </button>
+                            )}
+                            <button
+                              onClick={() => {
+                                setSceneEditId(s.id);
+                                setSceneEditEnv(s.environment ?? "");
+                                setSceneEditLock(s.environmentLockNotes ?? "");
+                                setSceneEditTransition(s.transitionToNext ?? "");
+                              }}
+                              className="p-1 rounded hover:bg-primary/10 text-muted-foreground hover:text-foreground"
+                              title="Scene bearbeiten"
+                            >
+                              <PencilIcon className="w-3 h-3" />
+                            </button>
+                          </div>
                         </div>
                         {s.environmentLockNotes && (
                           <p className="text-[11px] text-muted-foreground">
@@ -456,15 +496,21 @@ export default function StoryDetail() {
                     );
                   })}
                   {slidesWithoutScene.length > 0 && (
-                    <div className="bg-muted/50 border border-dashed border-border rounded-lg p-3 text-xs">
+                    <div className="bg-yellow-500/10 border border-yellow-500/40 rounded-lg p-3 text-xs space-y-1">
                       <div className="flex items-start justify-between gap-2">
-                        <span className="font-medium text-foreground">Ohne Scene</span>
-                        <span className="text-[11px] text-muted-foreground whitespace-nowrap">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <AlertTriangleIcon className="w-3.5 h-3.5 text-yellow-300" />
+                          <span className="font-medium text-yellow-100">Ohne Scene</span>
+                        </div>
+                        <span className="text-[11px] text-yellow-200/80 whitespace-nowrap">
                           {slidesWithoutScene.length} slide{slidesWithoutScene.length > 1 ? "s" : ""}
                           {" · "}
                           {slidesWithoutScene.map((sl) => sl.slideNumber).sort((a, b) => a - b).join(", ")}
                         </span>
                       </div>
+                      <p className="text-[11px] text-yellow-200/80">
+                        Slides ohne Scene-Zuordnung — über das Scene-Dropdown am aktiven Slide zuweisen.
+                      </p>
                     </div>
                   )}
                 </div>
@@ -613,14 +659,16 @@ export default function StoryDetail() {
                   </div>
                 </div>
 
-                {/* Scene-reassignment regen hint */}
-                {recentlyMovedSlideIds.has(currentSlide.id) && (
+                {/* Regen hint — driven by server-persisted slide.needsRegen.
+                    Set true by assignScene / updateScene / imagePrompt edits;
+                    reset by a successful regenerate. */}
+                {currentSlide.needsRegen && (
                   <div className="flex items-start gap-3 rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">
                     <AlertTriangleIcon className="w-4 h-4 mt-0.5 flex-shrink-0" />
                     <div className="flex-1 min-w-0">
-                      <p className="font-medium">Scene geändert — Bild regenerieren um anzuwenden</p>
+                      <p className="font-medium">Regenerate empfohlen</p>
                       <p className="text-yellow-200/70 mt-0.5">
-                        Der Image-Prompt wurde gegen die alte Scene geschrieben.
+                        Scene oder Prompt wurde geändert — das aktuelle Bild reflektiert das nicht.
                       </p>
                     </div>
                     <Button
@@ -898,6 +946,114 @@ export default function StoryDetail() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Löschen
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Scene-edit dialog — env / lock / transition. Triggers updateScene
+          which flags every slide in this scene as needsRegen. */}
+      <Dialog
+        open={sceneEditId !== null}
+        onOpenChange={(o) => !o && setSceneEditId(null)}
+      >
+        <DialogContent className="max-w-xl bg-card border-border">
+          <DialogHeader>
+            <DialogTitle className="font-display">
+              {(() => {
+                const idx = sceneEditId ? sceneIndexById.get(sceneEditId) : undefined;
+                return idx === undefined
+                  ? "Scene bearbeiten"
+                  : `Scene ${idx + 1} bearbeiten`;
+              })()}
+            </DialogTitle>
+            <DialogDescription>
+              Änderungen wirken nur auf zukünftige Bild-Generierungen.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Environment</label>
+              <Textarea
+                value={sceneEditEnv}
+                onChange={(e) => setSceneEditEnv(e.target.value)}
+                className="min-h-[60px] bg-background/50 text-sm"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Lock-Notes</label>
+              <Textarea
+                value={sceneEditLock}
+                onChange={(e) => setSceneEditLock(e.target.value)}
+                className="min-h-[60px] bg-background/50 text-sm"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Übergang zur nächsten Scene <span className="text-muted-foreground/60">(optional)</span>
+              </label>
+              <Textarea
+                value={sceneEditTransition}
+                onChange={(e) => setSceneEditTransition(e.target.value)}
+                className="min-h-[60px] bg-background/50 text-sm"
+              />
+            </div>
+            <div className="flex items-start gap-2 rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">
+              <AlertTriangleIcon className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <p>
+                Slides mit dieser Scene werden als <span className="font-medium">"Regenerate empfohlen"</span> markiert.
+              </p>
+            </div>
+            <div className="flex gap-3 pt-2">
+              <Button variant="outline" className="flex-1" onClick={() => setSceneEditId(null)}>
+                Abbrechen
+              </Button>
+              <Button
+                className="flex-1"
+                onClick={() => {
+                  if (!sceneEditId) return;
+                  updateScene.mutate({
+                    storyId,
+                    sceneId: sceneEditId,
+                    patch: {
+                      environment: sceneEditEnv,
+                      environmentLockNotes: sceneEditLock,
+                      transitionToNext: sceneEditTransition || null,
+                    },
+                  });
+                }}
+                disabled={updateScene.isPending}
+              >
+                {updateScene.isPending ? "Speichert…" : "Speichern"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Scene-remove confirm — only triggered for empty scenes. */}
+      <AlertDialog
+        open={removeSceneId !== null}
+        onOpenChange={(o) => !o && setRemoveSceneId(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Scene entfernen?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Diese Scene ist leer und wird aus dem Konsistenz-Kontext gelöscht.
+              Die übrigen Scenes werden nicht umnummeriert.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Abbrechen</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() =>
+                removeSceneId !== null &&
+                removeScene.mutate({ storyId, sceneId: removeSceneId })
+              }
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Entfernen
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

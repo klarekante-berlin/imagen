@@ -8,7 +8,7 @@ import {
   getAssetByContentHash, bulkApproveHighConfidence,
   createStory, getStories, getStoryById, updateStory, deleteStory,
   createSlides, getSlidesByStoryId, getSlideById, updateSlide, updateSlideByStoryAndNumber,
-  deleteSlide,
+  deleteSlide, markSlidesNeedingRegen,
   getCharacters, getCharacterById, getCharactersByIds, updateCharacter, resolveOrCreateCharacter,
 } from "./db";
 import { storagePut } from "./storage";
@@ -270,7 +270,12 @@ const characterRouter = router({
 // ─── Slides Router ────────────────────────────────────────────────────────────
 
 const slidesRouter = router({
-  /** Edit slide text fields. Does NOT trigger image regeneration. */
+  /**
+   * Edit slide text fields. Does NOT trigger image regeneration.
+   * If `imagePrompt` is changed, flips `needsRegen=true` so the UI surfaces
+   * the regenerate-to-apply hint (textContent/caption-only edits don't, since
+   * those don't affect image rendering).
+   */
   updateContent: publicProcedure
     .input(z.object({
       slideId: z.number(),
@@ -280,10 +285,18 @@ const slidesRouter = router({
     }))
     .mutation(async ({ input }) => {
       const { slideId, ...rest } = input;
-      const data: Partial<{ textContent: string; imagePrompt: string; caption: string }> = {};
+      const data: Partial<{
+        textContent: string;
+        imagePrompt: string;
+        caption: string;
+        needsRegen: boolean;
+      }> = {};
       if (rest.textContent !== undefined) data.textContent = rest.textContent;
-      if (rest.imagePrompt !== undefined) data.imagePrompt = rest.imagePrompt;
       if (rest.caption !== undefined) data.caption = rest.caption;
+      if (rest.imagePrompt !== undefined) {
+        data.imagePrompt = rest.imagePrompt;
+        data.needsRegen = true;
+      }
       await updateSlide(slideId, data);
       return { success: true };
     }),
@@ -319,7 +332,9 @@ const slidesRouter = router({
       const exists = ctx.scenes.some((s) => s.id === input.sceneId);
       if (!exists) throw new Error(`Scene "${input.sceneId}" not found in this story`);
 
-      await updateSlide(input.slideId, { sceneId: input.sceneId });
+      // Flip needsRegen so the slide shows the "regenerate to apply" strip —
+      // its imagePrompt was written against the *old* scene's environment.
+      await updateSlide(input.slideId, { sceneId: input.sceneId, needsRegen: true });
       return { success: true };
     }),
 
@@ -625,6 +640,89 @@ const storyRouter = router({
       return { success: true };
     }),
 
+  /**
+   * Patch a single scene inside `consistencyContext.scenes`. Only fields
+   * present in `patch` are touched. After persisting, every slide in this
+   * scene is flagged `needsRegen=true` so the UI nudges the user to
+   * regenerate (the imagePrompt was written against the pre-edit env/lock).
+   * See design doc §3b.
+   */
+  updateScene: publicProcedure
+    .input(z.object({
+      storyId: z.number().int().positive(),
+      sceneId: z.string().min(1),
+      patch: z.object({
+        environment: z.string().optional(),
+        environmentLockNotes: z.string().optional(),
+        transitionToNext: z.string().nullish(),
+        environmentRefAssetId: z.number().int().nullish(),
+      }),
+    }))
+    .mutation(async ({ input }) => {
+      const story = await getStoryById(input.storyId);
+      if (!story) throw new Error("Story not found");
+      const ctx = normalizeConsistencyContext(story.consistencyContext);
+      if (!ctx) throw new Error("Story has invalid consistency context");
+
+      const idx = ctx.scenes.findIndex((s) => s.id === input.sceneId);
+      if (idx === -1) throw new Error(`Scene "${input.sceneId}" not found`);
+
+      const cur = ctx.scenes[idx];
+      const merged: Scene = {
+        ...cur,
+        ...(input.patch.environment !== undefined ? { environment: input.patch.environment } : {}),
+        ...(input.patch.environmentLockNotes !== undefined
+          ? { environmentLockNotes: input.patch.environmentLockNotes }
+          : {}),
+        ...(input.patch.transitionToNext !== undefined
+          ? { transitionToNext: input.patch.transitionToNext ?? undefined }
+          : {}),
+        ...(input.patch.environmentRefAssetId !== undefined
+          ? { environmentRefAssetId: input.patch.environmentRefAssetId ?? undefined }
+          : {}),
+      };
+      const nextScenes = ctx.scenes.slice();
+      nextScenes[idx] = merged;
+      await updateStory(input.storyId, {
+        consistencyContext: { ...ctx, scenes: nextScenes },
+      });
+
+      const flagged = await markSlidesNeedingRegen(input.storyId, input.sceneId);
+      return { success: true, flagged };
+    }),
+
+  /**
+   * Remove an empty scene from `consistencyContext.scenes`. Refuses to delete
+   * if any slide still references this sceneId (caller should reassign first).
+   * Does NOT renumber surviving scenes. See design doc §6.
+   */
+  removeScene: publicProcedure
+    .input(z.object({
+      storyId: z.number().int().positive(),
+      sceneId: z.string().min(1),
+    }))
+    .mutation(async ({ input }) => {
+      const story = await getStoryById(input.storyId);
+      if (!story) throw new Error("Story not found");
+      const ctx = normalizeConsistencyContext(story.consistencyContext);
+      if (!ctx) throw new Error("Story has invalid consistency context");
+
+      const idx = ctx.scenes.findIndex((s) => s.id === input.sceneId);
+      if (idx === -1) throw new Error(`Scene "${input.sceneId}" not found`);
+
+      const storySlides = await getSlidesByStoryId(input.storyId);
+      const stillReferenced = storySlides.some((s) => s.sceneId === input.sceneId);
+      if (stillReferenced) {
+        throw new Error("Scene has slides assigned — reassign them before deleting");
+      }
+
+      const nextScenes = ctx.scenes.filter((s) => s.id !== input.sceneId);
+      await updateStory(input.storyId, {
+        consistencyContext: { ...ctx, scenes: nextScenes },
+      });
+      return { success: true };
+    }),
+
   delete: publicProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ input }) => {
@@ -847,6 +945,8 @@ const generateRouter = router({
         imageUrl: result.imageUrl,
         status: "complete",
         errorMessage: null,
+        // Slide is now in sync with its prompt + scene context.
+        needsRegen: false,
       });
 
       return { imageUrl: result.imageUrl };
