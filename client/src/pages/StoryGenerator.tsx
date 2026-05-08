@@ -41,6 +41,9 @@ export default function StoryGenerator() {
   const [showAssetPicker, setShowAssetPicker] = useState<string | null>(null); // entity name
   const [pickerCategory, setPickerCategory] = useState<string>("");
   const [scenesOpen, setScenesOpen] = useState(true);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [customSystemPrompt, setCustomSystemPrompt] = useState("");
+  const [customUserPromptPrefix, setCustomUserPromptPrefix] = useState("");
 
   const { data: allAssets } = trpc.assets.list.useQuery(
     { category: pickerCategory || undefined },
@@ -56,7 +59,12 @@ export default function StoryGenerator() {
   const handlePlan = useCallback(async () => {
     if (!theme.trim()) { toast.error("Bitte gib ein Thema oder Skript ein"); return; }
     try {
-      const result = await planMutation.mutateAsync({ theme, model });
+      const result = await planMutation.mutateAsync({
+        theme,
+        model,
+        customSystemPrompt: customSystemPrompt.trim() || undefined,
+        customUserPromptPrefix: customUserPromptPrefix.trim() || undefined,
+      });
       setPlan({
         title: result.title,
         reasoning: result.reasoning,
@@ -71,7 +79,7 @@ export default function StoryGenerator() {
     } catch (err) {
       toast.error("Fehler beim Planen: " + (err instanceof Error ? err.message : "Unbekannt"));
     }
-  }, [theme, model, planMutation]);
+  }, [theme, model, planMutation, customSystemPrompt, customUserPromptPrefix]);
 
   // ─── Generate ─────────────────────────────────────────────────────────────
 
@@ -105,13 +113,15 @@ export default function StoryGenerator() {
         model,
         imageFormat,
         imageProvider: "gpt-image-2",
+        customSystemPrompt: customSystemPrompt.trim() || undefined,
+        customUserPromptPrefix: customUserPromptPrefix.trim() || undefined,
       });
       toast.success(`Story "${result.title}" erstellt!`);
       navigate(`/story/${result.storyId}`);
     } catch (err) {
       toast.error("Fehler: " + (err instanceof Error ? err.message : "Unbekannt"));
     }
-  }, [theme, plan, model, imageFormat, generateMutation, navigate]);
+  }, [theme, plan, model, imageFormat, generateMutation, navigate, customSystemPrompt, customUserPromptPrefix]);
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -184,6 +194,46 @@ export default function StoryGenerator() {
                 {isPlanning ? <><Loader2 className="w-4 h-4 animate-spin" /> Plane…</>
                   : <><Sparkles className="w-4 h-4" /> Plan erstellen</>}
               </Button>
+            </div>
+
+            {/* Advanced prompt overrides — power user */}
+            <div className="border-t border-border/40 pt-3">
+              <button
+                onClick={() => setAdvancedOpen((o) => !o)}
+                className="flex items-center gap-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+              >
+                {advancedOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                Erweitert (Prompt-Überschreibung)
+                {(customSystemPrompt.trim() || customUserPromptPrefix.trim()) && (
+                  <Badge className="text-[10px] bg-amber-500/15 text-amber-400 border-amber-500/30">aktiv</Badge>
+                )}
+              </button>
+              {advancedOpen && (
+                <div className="mt-3 space-y-3">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-muted-foreground">
+                      System-Prompt überschreiben (optional)
+                    </label>
+                    <Textarea
+                      placeholder="Leer lassen für Default. Wirkt auf Plan + Generate."
+                      value={customSystemPrompt}
+                      onChange={(e) => setCustomSystemPrompt(e.target.value)}
+                      className="min-h-[80px] font-mono text-xs bg-background/50"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-muted-foreground">
+                      User-Prompt-Präfix (optional)
+                    </label>
+                    <Textarea
+                      placeholder="Wird vor dem auto-generierten User-Template eingefügt."
+                      value={customUserPromptPrefix}
+                      onChange={(e) => setCustomUserPromptPrefix(e.target.value)}
+                      className="min-h-[60px] font-mono text-xs bg-background/50"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

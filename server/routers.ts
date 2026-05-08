@@ -7,6 +7,7 @@ import {
   getAssetByContentHash, bulkApproveHighConfidence,
   createStory, getStories, getStoryById, updateStory, deleteStory,
   createSlides, getSlidesByStoryId, getSlideById, updateSlide, updateSlideByStoryAndNumber,
+  deleteSlide,
   getCharacters, getCharacterById, getCharactersByIds, updateCharacter, resolveOrCreateCharacter,
 } from "./db";
 import { storagePut } from "./storage";
@@ -16,7 +17,7 @@ import {
   normalizeConsistencyContext,
 } from "./storyService";
 import { planStory, writeStorySlides } from "./storyPlanner";
-import type { ConsistencyCharacterRef, StoryPlan } from "@shared/types";
+import type { ConsistencyCharacterRef, ConsistencyContext, Scene, StoryPlan } from "@shared/types";
 import {
   categorizeImage, reviewStatusFromResult,
   type CategorizeResult, type KnownCharacter,
@@ -190,6 +191,10 @@ const assetRouter = router({
       description: z.string().optional(),
       visualDescription: z.string().optional(),
       tags: z.array(z.string()).optional(),
+      pose: z.string().optional(),
+      outfit: z.string().optional(),
+      mood: z.string().optional(),
+      dominantColors: z.array(z.string()).optional(),
     }))
     .mutation(async ({ input }) => {
       const { id, ...data } = input;
@@ -253,6 +258,52 @@ const characterRouter = router({
     }),
 });
 
+// ─── Slides Router ────────────────────────────────────────────────────────────
+
+const slidesRouter = router({
+  /** Edit slide text fields. Does NOT trigger image regeneration. */
+  updateContent: publicProcedure
+    .input(z.object({
+      slideId: z.number(),
+      textContent: z.string().optional(),
+      imagePrompt: z.string().optional(),
+      caption: z.string().optional(),
+    }))
+    .mutation(async ({ input }) => {
+      const { slideId, ...rest } = input;
+      const data: Partial<{ textContent: string; imagePrompt: string; caption: string }> = {};
+      if (rest.textContent !== undefined) data.textContent = rest.textContent;
+      if (rest.imagePrompt !== undefined) data.imagePrompt = rest.imagePrompt;
+      if (rest.caption !== undefined) data.caption = rest.caption;
+      await updateSlide(slideId, data);
+      return { success: true };
+    }),
+
+  delete: publicProcedure
+    .input(z.object({ slideId: z.number() }))
+    .mutation(async ({ input }) => {
+      await deleteSlide(input.slideId);
+      return { success: true };
+    }),
+
+  /** Reorder slides: array position (1-indexed) becomes the new slideNumber. */
+  reorder: publicProcedure
+    .input(z.object({ storyId: z.number(), slideIds: z.array(z.number()).min(1) }))
+    .mutation(async ({ input }) => {
+      // Two-pass to avoid uniqueness collisions if a future migration adds a
+      // (storyId, slideNumber) unique index — first move everything into a
+      // disjoint range, then settle into the final order.
+      const offset = 1000;
+      for (let i = 0; i < input.slideIds.length; i++) {
+        await updateSlide(input.slideIds[i], { slideNumber: offset + i + 1 });
+      }
+      for (let i = 0; i < input.slideIds.length; i++) {
+        await updateSlide(input.slideIds[i], { slideNumber: i + 1 });
+      }
+      return { success: true };
+    }),
+});
+
 // ─── Story Router ─────────────────────────────────────────────────────────────
 
 const storyRouter = router({
@@ -274,6 +325,8 @@ const storyRouter = router({
     .input(z.object({
       theme: z.string().min(1),
       model: z.enum(["claude-sonnet-4-6", "claude-opus-4-5"]).default("claude-sonnet-4-6"),
+      customSystemPrompt: z.string().optional(),
+      customUserPromptPrefix: z.string().optional(),
     }))
     .mutation(async ({ input }) => {
       const characterLibrary = await getCharacters();
@@ -289,6 +342,8 @@ const storyRouter = router({
           defaultDescription: c.defaultDescription,
         })),
         assetCatalog,
+        customSystemPrompt: input.customSystemPrompt,
+        customUserPromptPrefix: input.customUserPromptPrefix,
       });
 
       // Enrich detectedEntities with full character info for the UI
@@ -334,6 +389,8 @@ const storyRouter = router({
       model: z.enum(["claude-sonnet-4-6", "claude-opus-4-5"]).default("claude-sonnet-4-6"),
       imageFormat: z.enum(["1:1", "4:5"]).default("1:1"),
       imageProvider: z.enum(["gpt-image-2", "freepik"]).default("gpt-image-2"),
+      customSystemPrompt: z.string().optional(),
+      customUserPromptPrefix: z.string().optional(),
     }))
     .mutation(async ({ input }) => {
       // Coerce zod-allowed null → undefined for downstream Scene/DetectedEntity shapes.
@@ -430,6 +487,8 @@ const storyRouter = router({
         styleReferenceUrls,
         model: input.model,
         imageFormat: input.imageFormat,
+        customSystemPrompt: input.customSystemPrompt,
+        customUserPromptPrefix: input.customUserPromptPrefix,
       });
 
       const storyId = await createStory({
@@ -457,6 +516,58 @@ const storyRouter = router({
 
       await updateStory(storyId, { status: "draft" });
       return { storyId, title: plan.title };
+    }),
+
+  /**
+   * Patch a story's consistencyContext. Reads, shallow-merges with patch,
+   * writes back. Unspecified fields stay untouched.
+   */
+  updateConsistencyContext: publicProcedure
+    .input(z.object({
+      storyId: z.number(),
+      patch: z.object({
+        colorPalette: z.string().optional(),
+        globalStylePrompt: z.string().optional(),
+        artStyle: z.string().optional(),
+        characters: z.array(z.object({
+          characterId: z.number(),
+          assetId: z.number(),
+          name: z.string(),
+          outfit: z.string(),
+          visualDescription: z.string(),
+          referenceImageUrl: z.string().optional(),
+          worldBuilt: z.boolean().optional(),
+        })).optional(),
+        scenes: z.array(z.object({
+          id: z.string(),
+          slideRange: z.tuple([z.number().int(), z.number().int()]),
+          environment: z.string(),
+          environmentLockNotes: z.string(),
+          transitionToNext: z.string().optional(),
+          environmentRefAssetId: z.number().optional(),
+        })).optional(),
+      }),
+    }))
+    .mutation(async ({ input }) => {
+      const story = await getStoryById(input.storyId);
+      if (!story) throw new Error("Story not found");
+      const existing = (story.consistencyContext as ConsistencyContext | null) ?? null;
+      if (!existing) throw new Error("Story has no consistency context");
+
+      const merged: ConsistencyContext = {
+        ...existing,
+        ...(input.patch.artStyle !== undefined ? { artStyle: input.patch.artStyle } : {}),
+        ...(input.patch.colorPalette !== undefined ? { colorPalette: input.patch.colorPalette } : {}),
+        ...(input.patch.globalStylePrompt !== undefined ? { globalStylePrompt: input.patch.globalStylePrompt } : {}),
+        ...(input.patch.characters !== undefined
+          ? { characters: input.patch.characters as ConsistencyCharacterRef[] }
+          : {}),
+        ...(input.patch.scenes !== undefined
+          ? { scenes: input.patch.scenes as Scene[] }
+          : {}),
+      };
+      await updateStory(input.storyId, { consistencyContext: merged });
+      return { success: true };
     }),
 
   delete: publicProcedure
@@ -692,6 +803,7 @@ export const appRouter = router({
   assets: assetRouter,
   characters: characterRouter,
   stories: storyRouter,
+  slides: slidesRouter,
   generate: generateRouter,
 });
 

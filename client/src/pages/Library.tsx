@@ -95,6 +95,12 @@ export default function Library() {
   const [editCategory, setEditCategory] = useState<string>("sonstiges");
   const [editCharacterId, setEditCharacterId] = useState<number | null>(null);
   const [editIsCharacterSheet, setEditIsCharacterSheet] = useState(false);
+  const [editVisualDescription, setEditVisualDescription] = useState("");
+  const [editTags, setEditTags] = useState("");
+  const [editPose, setEditPose] = useState("");
+  const [editOutfit, setEditOutfit] = useState("");
+  const [editMood, setEditMood] = useState("");
+  const [editDominantColors, setEditDominantColors] = useState("");
 
   const utils = trpc.useUtils();
   const { data: assets = [], isLoading } = trpc.assets.list.useQuery({
@@ -116,11 +122,10 @@ export default function Library() {
   });
 
   const approveMutation = trpc.assets.approveCategory.useMutation({
-    onSuccess: () => {
-      toast.success("Asset aktualisiert");
-      utils.assets.list.invalidate();
-      setEditAsset(null);
-    },
+    onError: (err) => toast.error(`Fehler: ${err.message}`),
+  });
+
+  const updateAssetMutation = trpc.assets.update.useMutation({
     onError: (err) => toast.error(`Fehler: ${err.message}`),
   });
 
@@ -137,16 +142,43 @@ export default function Library() {
     setEditCategory(asset.category);
     setEditCharacterId(asset.characterId ?? null);
     setEditIsCharacterSheet(asset.isCharacterSheet);
+    setEditVisualDescription(asset.visualDescription ?? "");
+    setEditTags((asset.tags ?? []).join(", "));
+    setEditPose(asset.pose ?? "");
+    setEditOutfit(asset.outfit ?? "");
+    setEditMood(asset.mood ?? "");
+    setEditDominantColors((asset.dominantColors ?? []).join(", "));
   };
 
-  const handleEditSave = () => {
+  const handleEditSave = async () => {
     if (!editAsset) return;
-    approveMutation.mutate({
-      id: editAsset.id,
-      category: editCategory as Asset["category"],
-      characterId: editCharacterId,
-      isCharacterSheet: editIsCharacterSheet,
-    });
+    const splitCsv = (v: string) =>
+      v.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    try {
+      // assets.update covers the descriptive fields; assets.approveCategory
+      // covers the review-status flag. Run sequentially so we surface either
+      // failure cleanly.
+      await updateAssetMutation.mutateAsync({
+        id: editAsset.id,
+        category: editCategory as Asset["category"],
+        visualDescription: editVisualDescription,
+        tags: splitCsv(editTags),
+        pose: editPose,
+        outfit: editOutfit,
+        mood: editMood,
+        dominantColors: splitCsv(editDominantColors),
+      });
+      await approveMutation.mutateAsync({
+        id: editAsset.id,
+        characterId: editCharacterId,
+        isCharacterSheet: editIsCharacterSheet,
+      });
+      toast.success("Asset aktualisiert");
+      utils.assets.list.invalidate();
+      setEditAsset(null);
+    } catch {
+      // toasts already fire from the mutation onError handlers
+    }
   };
 
   const pendingReviewCount = assets.filter((a) => a.reviewStatus === "needs_review").length;
@@ -647,7 +679,7 @@ export default function Library() {
 
       {/* Edit / Approve Dialog */}
       <Dialog open={!!editAsset} onOpenChange={(o) => !o && setEditAsset(null)}>
-        <DialogContent className="max-w-md bg-card border-border">
+        <DialogContent className="max-w-md bg-card border-border max-h-[90vh] overflow-y-auto">
           {editAsset && (
             <>
               <DialogHeader>
@@ -703,6 +735,58 @@ export default function Library() {
                   />
                   Ist Character-Sheet (saubere Reference)
                 </label>
+                <div className="space-y-1.5">
+                  <Label>Visuelle Beschreibung (KI-Prompt)</Label>
+                  <Textarea
+                    value={editVisualDescription}
+                    onChange={(e) => setEditVisualDescription(e.target.value)}
+                    className="min-h-[80px] bg-background border-border text-sm font-mono"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Tags (komma-getrennt)</Label>
+                  <Input
+                    value={editTags}
+                    onChange={(e) => setEditTags(e.target.value)}
+                    placeholder="z.B. portrait, outdoor, smiling"
+                    className="bg-background border-border"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Pose</Label>
+                    <Input
+                      value={editPose}
+                      onChange={(e) => setEditPose(e.target.value)}
+                      className="bg-background border-border"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Mood</Label>
+                    <Input
+                      value={editMood}
+                      onChange={(e) => setEditMood(e.target.value)}
+                      className="bg-background border-border"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Outfit</Label>
+                  <Textarea
+                    value={editOutfit}
+                    onChange={(e) => setEditOutfit(e.target.value)}
+                    className="min-h-[60px] bg-background border-border text-sm"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Dominante Farben (komma-getrennt, hex)</Label>
+                  <Input
+                    value={editDominantColors}
+                    onChange={(e) => setEditDominantColors(e.target.value)}
+                    placeholder="#a02233, #f0e4cb"
+                    className="bg-background border-border"
+                  />
+                </div>
                 <div className="flex gap-3 pt-2">
                   <Button variant="outline" className="flex-1" onClick={() => setEditAsset(null)}>
                     Abbrechen
@@ -710,7 +794,7 @@ export default function Library() {
                   <Button
                     className="flex-1 gap-2"
                     onClick={handleEditSave}
-                    disabled={approveMutation.isPending}
+                    disabled={approveMutation.isPending || updateAssetMutation.isPending}
                   >
                     Speichern & approven
                   </Button>
