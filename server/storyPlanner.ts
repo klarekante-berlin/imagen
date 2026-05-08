@@ -5,6 +5,7 @@ import type {
   ConsistencyCharacterRef,
   ConsistencyContext,
   DetectedEntity,
+  Scene,
   SlideContent,
   StoryPlan,
 } from "@shared/types";
@@ -676,4 +677,144 @@ export async function writeStorySlides(input: WriteInput): Promise<{
   if (!normalized) throw new Error("Failed to normalize newly-built consistency context");
 
   return { consistencyContext: normalized, slides };
+}
+
+// ─── rewriteSlideImagePrompt ──────────────────────────────────────────────────
+
+export interface RewriteSlideInput {
+  slide: {
+    slideNumber: number;
+    textContent: string;
+    caption: string;
+    charactersInSlide: string[];
+    sceneId: string | null;
+  };
+  scene: Scene | null;
+  characters: ConsistencyCharacterRef[];
+  storyTheme: string;
+  imageFormat: ImageFormat;
+  model: AiModel;
+}
+
+const REWRITE_IMAGE_PROMPT_SYSTEM = `Du schreibst EINEN neuen imagePrompt für genau EINEN Slide eines Instagram-Carousels (Stil klarekante.berlin).
+
+Der Slide existiert bereits — Text und Caption stehen fest. Du bekommst die AKTUELLE Scene (kann nach einem Reassign anders sein als beim ursprünglichen Schreiben). Aufgabe: ein frischer imagePrompt, der zu dieser Scene passt.
+
+imagePrompt FORMAT (STRENG):
+imagePrompt darf NUR enthalten:
+  1) was im Bild PASSIERT (Aktion, Pose, Gesichtsausdruck, Kameraperspektive)
+  2) Text-Overlay-Anweisung mit dem textContent
+
+imagePrompt darf NIEMALS enthalten:
+  ❌ Render-Stil ("3D cartoon", "Pixar style", "render", "animation")
+  ❌ Format-Angaben ("1080x1080", "square format", "aspect ratio")
+  ❌ Charakter-Aussehen ("kahlköpfig", "blau-kariertes Hemd", "in his 40s")
+       — die Refs zeigen das, das ist Server-Job
+  ❌ Setting-Re-Beschreibung — das prependiert der Server aus der Scene
+  ❌ Doppelt erwähnte Charaktere die dieselbe Person sind
+  ❌ Beleuchtungs-Beschreibung ("warmes goldenes Sonnenlicht") — kommt aus sceneToneNotes
+
+CHARAKTERE IM imagePrompt:
+- Charaktere mit ✓ HAT REF → nur Name + Aktion ("Papa lacht", "Sohn rollt Augen")
+- Charaktere mit ✗ keine Ref → trotzdem KURZ halten, max 5 Wörter Aussehen
+
+TEXT-OVERLAY:
+- imagePrompt MUSS erwähnen DASS textContent als Text-Overlay im Bild erscheint
+- KEINE hardcoded Schrift/Farbe/Position — Typografie kommt aus stil-referenz Assets
+- Erwähne nur den Inhalt, keine "bold white", "upper third"
+
+WICHTIG ZU STRINGS:
+- Verwende NIEMALS doppelte Anführungszeichen " innerhalb des imagePrompt — bricht JSON
+- Für Zitate/Dialoge: einfache Anführungszeichen ' oder Gedankenstriche —
+
+Antworte über das tool_use API mit { imagePrompt: string }.`;
+
+const REWRITE_TOOL = {
+  name: "rewrite_image_prompt",
+  description: "Schreibe einen neuen imagePrompt für einen einzelnen Slide gegen die aktuelle Scene.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      imagePrompt: { type: "string" },
+    },
+    required: ["imagePrompt"],
+  },
+};
+
+const REWRITE_USER_TEMPLATE = (input: RewriteSlideInput) => {
+  const { slide, scene, characters, storyTheme, imageFormat } = input;
+  const charBlock = characters.length > 0
+    ? characters
+        .map((c) => {
+          const refTag = c.referenceImageUrl ? "✓ HAT REFERENCE-IMAGE" : "✗ keine Reference";
+          return `- "${c.name}" (assetId:${c.assetId}) [${refTag}] outfit: ${c.outfit || "—"} | ${c.visualDescription || "—"}`;
+        })
+        .join("\n")
+    : "(keine — Charaktere im imagePrompt selbst beschreiben)";
+
+  const sceneBlock = scene
+    ? `- ${scene.id} slides ${scene.slideRange[0]}-${scene.slideRange[1]}: ${scene.environment}
+- Lock: ${scene.environmentLockNotes || "—"}${scene.transitionToNext ? `\n- Transition zur nächsten Scene: ${scene.transitionToNext}` : ""}`
+    : "(Slide hat keine Scene-Zuordnung — beschreibe das Setting kurz im imagePrompt)";
+
+  return `THEMA: ${storyTheme}
+
+AKTUELLE SCENE:
+${sceneBlock}
+
+CHARAKTERE (FEST):
+${charBlock}
+
+SLIDE:
+- slideNumber: ${slide.slideNumber}
+- textContent: ${slide.textContent}
+- caption: ${slide.caption}
+- charactersInSlide: ${slide.charactersInSlide.join(", ") || "(keine)"}
+
+Bildformat: ${imageFormat === "1:1" ? "quadratisch 1080x1080px" : "Hochformat 1080x1350px"}
+
+Schreibe einen neuen imagePrompt für diesen Slide, der zur AKTUELLEN Scene oben passt. Rufe das Tool rewrite_image_prompt auf.`;
+};
+
+/**
+ * Single-slide rewrite: produce a fresh imagePrompt against the current
+ * scene/character context. Used after a slide has been reassigned to a
+ * different scene or its scene's environment was edited — the original
+ * imagePrompt was written against stale context.
+ */
+export async function rewriteSlideImagePrompt(input: RewriteSlideInput): Promise<string> {
+  const client = getAnthropicClient();
+  const claudeModel = input.model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
+
+  const userContent = REWRITE_USER_TEMPLATE(input);
+
+  const response = await callClaudeWithRetry(
+    client,
+    {
+      model: claudeModel,
+      max_tokens: 2000,
+      system: [
+        {
+          type: "text",
+          text: REWRITE_IMAGE_PROMPT_SYSTEM,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      tools: [REWRITE_TOOL],
+      tool_choice: { type: "tool", name: "rewrite_image_prompt" },
+      messages: [{ role: "user", content: userContent }],
+    },
+    "rewriteSlideImagePrompt",
+  );
+
+  const toolUse = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+  );
+  if (!toolUse) throw new Error("rewriteSlideImagePrompt: no tool_use block in response");
+
+  const parsed = toolUse.input as { imagePrompt?: unknown };
+  if (typeof parsed.imagePrompt !== "string" || parsed.imagePrompt.trim().length === 0) {
+    throw new Error("rewriteSlideImagePrompt: tool_use returned empty imagePrompt");
+  }
+  return parsed.imagePrompt.trim();
 }

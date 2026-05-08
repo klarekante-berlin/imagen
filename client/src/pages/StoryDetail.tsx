@@ -47,6 +47,7 @@ import {
   AlertTriangleIcon,
   LayersIcon,
   CheckIcon,
+  WandSparklesIcon,
 } from "lucide-react";
 import type { Slide } from "../../../drizzle/schema";
 import { STATUS_CONFIG } from "@/const";
@@ -82,6 +83,16 @@ export default function StoryDetail() {
       toast.success("Slide neu generiert!");
       // The yellow strip auto-disappears via the refreshed slide.needsRegen=false.
       utils.stories.get.invalidate({ id: storyId });
+    },
+    onError: (err) => toast.error(`Fehler: ${err.message}`),
+  });
+
+  const regenerateWithFreshPrompt = trpc.generate.regenerateWithFreshPrompt.useMutation({
+    onSuccess: () => {
+      toast.success("Prompt neu geschrieben & Slide regeneriert");
+      utils.stories.get.invalidate({ id: storyId });
+      // Close the edit dialog if the user kicked it off from there.
+      setEditingSlideId(null);
     },
     onError: (err) => toast.error(`Fehler: ${err.message}`),
   });
@@ -681,6 +692,23 @@ export default function StoryDetail() {
                     </Button>
                     <Button
                       size="sm"
+                      variant="outline"
+                      className="gap-1.5 text-xs"
+                      onClick={() =>
+                        regenerateWithFreshPrompt.mutate({ slideId: currentSlide.id })
+                      }
+                      disabled={regenerateWithFreshPrompt.isPending}
+                      title="Claude schreibt einen frischen imagePrompt gegen die aktuelle Scene und regeneriert dann das Bild"
+                    >
+                      {regenerateWithFreshPrompt.isPending ? (
+                        <LoaderIcon className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <WandSparklesIcon className="w-3.5 h-3.5" />
+                      )}
+                      Prompt neu + Regenerate
+                    </Button>
+                    <Button
+                      size="sm"
                       variant="ghost"
                       className="gap-1.5 text-xs text-destructive hover:text-destructive"
                       onClick={() => setDeleteSlideId(currentSlide.id)}
@@ -954,6 +982,31 @@ export default function StoryDetail() {
                   <>
                     <ZapIcon className="w-3.5 h-3.5" />
                     Speichern &amp; Regenerieren
+                  </>
+                )}
+              </Button>
+            </div>
+            <div className="pt-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full gap-1.5 text-xs"
+                onClick={() =>
+                  editingSlideId !== null &&
+                  regenerateWithFreshPrompt.mutate({ slideId: editingSlideId })
+                }
+                disabled={regenerateWithFreshPrompt.isPending || editingSlideId === null}
+                title="Claude schreibt einen frischen imagePrompt basierend auf der aktuellen Scene"
+              >
+                {regenerateWithFreshPrompt.isPending ? (
+                  <>
+                    <LoaderIcon className="w-3.5 h-3.5 animate-spin" />
+                    Prompt wird neu geschrieben…
+                  </>
+                ) : (
+                  <>
+                    <WandSparklesIcon className="w-3.5 h-3.5" />
+                    Prompt von Claude neu schreiben
                   </>
                 )}
               </Button>
