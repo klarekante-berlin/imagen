@@ -7,8 +7,27 @@ import {
 } from "../../drizzle/schema";
 import type { AssetVariant } from "@shared/types";
 import { ENV } from "./env";
-import { prepareCroppedRefForAtlas } from "./imagePrep";
+import { prepareCroppedRefForAtlas, prepareImageForVision } from "./imagePrep";
 import { embedMultimodal } from "./voyage";
+
+/**
+ * Normalize a vision image source so the base64 payload always fits the
+ * Anthropic 5MB request limit. URLs pass through (Anthropic fetches them).
+ * Base64 inputs are re-prepared via the shared `prepareImageForVision`
+ * pipeline (resize ≤1568px long edge, JPEG q85, fall back to q70).
+ */
+async function normalizeVisionSource(
+  source: { type: "url"; url: string } | { type: "base64"; mediaType: string; data: string },
+): Promise<{ type: "url"; url: string } | { type: "base64"; mediaType: string; data: string }> {
+  if (source.type === "url") return source;
+  const buffer = Buffer.from(source.data, "base64");
+  const prepared = await prepareImageForVision(buffer, source.mediaType);
+  return {
+    type: "base64",
+    mediaType: prepared.mediaType,
+    data: prepared.buffer.toString("base64"),
+  };
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -188,6 +207,7 @@ export async function categorizeImage(
   hint?: CategorizeHint
 ): Promise<CategorizeResult> {
   const client = getAnthropicClient();
+  const normalizedSource = await normalizeVisionSource(imageSource);
 
   const response = await client.messages.create({
     model: "claude-sonnet-4-6",
@@ -201,7 +221,7 @@ export async function categorizeImage(
     ],
     tools: [CATEGORIZE_TOOL],
     tool_choice: { type: "tool", name: "categorize_asset" },
-    messages: [{ role: "user", content: buildUserContent(imageSource, hint) }],
+    messages: [{ role: "user", content: buildUserContent(normalizedSource, hint) }],
   });
 
   const toolUse = response.content.find(
@@ -402,6 +422,7 @@ export async function extractVariantsFromSheet(
   },
 ): Promise<AssetVariant[]> {
   const client = getAnthropicClient();
+  const normalizedSource = await normalizeVisionSource(imageSource);
 
   const response = await client.messages.create({
     model: "claude-sonnet-4-6",
@@ -415,7 +436,7 @@ export async function extractVariantsFromSheet(
     ],
     tools: [EXTRACT_VARIANTS_TOOL],
     tool_choice: { type: "tool", name: "extract_sheet_variants" },
-    messages: [{ role: "user", content: buildVariantUserContent(imageSource, context) }],
+    messages: [{ role: "user", content: buildVariantUserContent(normalizedSource, context) }],
   });
 
   const toolUse = response.content.find(

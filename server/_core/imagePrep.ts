@@ -8,6 +8,11 @@ const MAX_BYTES = 4_500_000;
 /** Anthropic recommends ≤1568px long edge for vision; downscaling above this gives no benefit. */
 const MAX_LONG_EDGE = 1568;
 
+/** Storage-side limits — we keep more pixels than vision but still cap. */
+const STORAGE_MAX_LONG_EDGE = 2048;
+/** Convert non-JPEG sources to JPEG when they exceed this size. Small icons keep their format. */
+const STORAGE_CONVERT_THRESHOLD = 1_000_000;
+
 export interface PreparedImage {
   buffer: Buffer;
   mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
@@ -57,6 +62,34 @@ export async function prepareImageForVision(
     originalBytes,
     finalBytes: buf.byteLength,
   };
+}
+
+/**
+ * Prepare a freshly-uploaded image for permanent storage. Big PNG/WEBP/GIF
+ * uploads (>1MB) are re-encoded to JPEG q90 with a 2048px long-edge cap so
+ * they don't blow past Anthropic's 5MB vision limit later. JPEG sources and
+ * small non-JPEG icons pass through untouched.
+ */
+export async function prepareImageForStorage(
+  buffer: Buffer,
+  declaredMime: string,
+  fileName: string,
+): Promise<{ buffer: Buffer; mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif"; fileName: string }> {
+  const mediaType = pickMediaType(declaredMime);
+  const isJpeg = mediaType === "image/jpeg";
+  const shouldConvert = !isJpeg && buffer.byteLength > STORAGE_CONVERT_THRESHOLD;
+  if (!shouldConvert) {
+    return { buffer, mediaType, fileName };
+  }
+
+  const out = await sharp(buffer)
+    .rotate()
+    .resize({ width: STORAGE_MAX_LONG_EDGE, height: STORAGE_MAX_LONG_EDGE, fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 90, mozjpeg: true })
+    .toBuffer();
+
+  const renamed = fileName.replace(/\.(png|webp|gif|jpe?g)$/i, "") + ".jpg";
+  return { buffer: out, mediaType: "image/jpeg", fileName: renamed };
 }
 
 /**
