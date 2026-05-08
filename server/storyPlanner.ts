@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { jsonrepair } from "jsonrepair";
 import type { Asset, AiModel, ImageFormat, Character } from "../drizzle/schema";
 import type {
+  AssetVariant,
   ConsistencyCharacterRef,
   ConsistencyContext,
   DetectedEntity,
@@ -829,4 +830,234 @@ export async function rewriteSlideImagePrompt(input: RewriteSlideInput): Promise
     throw new Error("rewriteSlideImagePrompt: tool_use returned empty imagePrompt");
   }
   return parsed.imagePrompt.trim();
+}
+
+// ─── composeSlideAction ───────────────────────────────────────────────────────
+
+/**
+ * Creative composer step: per slide, decide which variant best fits each
+ * character + describe what they actually do. The output is later folded
+ * into `imagePrompt` (full character sheets always go to Atlas — gpt-image-2
+ * picks the variant from this prompt context, no panel cropping).
+ *
+ * This function is the drop-in replacement for the old per-axis selectors.
+ * Branch B will pass `inspirationSheets` (Voyage RAG); Branch A leaves it
+ * undefined and the result still works.
+ */
+export interface ComposeSlideActionInput {
+  slide: {
+    slideNumber: number;
+    textContent: string;
+    imagePrompt: string;
+    charactersInSlide: string[];
+    sceneId: string | null;
+  };
+  scene: Scene | null;
+  storyTheme: string;
+  charactersWithVariants: Array<{ name: string; variants: AssetVariant[] }>;
+  sceneVariants?: AssetVariant[];
+  inspirationSheets?: Array<{ assetId: number; visualDescription: string }>;
+  model: AiModel;
+}
+
+export interface ComposeSlideActionResult {
+  /** characterName → variantName. Characters without a good match are omitted. */
+  variantsByCharacter: Record<string, string>;
+  /** characterName → 1-sentence German activity description. */
+  activitiesByCharacter: Record<string, string>;
+  sceneVariant?: string;
+  sceneActivityNotes?: string;
+  reasoning: string;
+}
+
+const COMPOSE_SYSTEM = `Du bist creative composer für eine deutsche Instagram-Carousel-App. Pro Slide entscheidest du:
+1) Welche variant aus den verfügbaren Sheets passt am besten zu jedem Charakter? (oder null wenn keine passt)
+2) Was MACHT jeder Charakter konkret? (Pose, Gestik, Gegenstände, Blick) — 1 SATZ DEUTSCH
+
+REGELN:
+- Pro charakter pick die passendste variant ODER null (keine variant ≠ Fehler — manchmal gibt's einfach keinen guten Treffer)
+- Pro charakter beschreibe in 1 SATZ DEUTSCH was er konkret macht: pose, gestik, gegenstände, blick. Sei konkret: 'hält Grillzange, dreht Steak' nicht 'beim grillen'
+- Multi-Charakter: koordiniere — wenn alle in einer Szene, sollen sie verschiedene Sachen tun (nicht alle gucken in die Kamera). Die Szene soll lebendig wirken.
+- Wenn inspirationSheets gegeben sind, nutze sie als Stil-/Szenen-Hinweis für die Aktivitäten (z.B. 'Strand-Sheet zeigt jemanden mit Sandeimer → Lily spielt mit Eimer')
+- sceneVariant: optional, nur setzen wenn sceneVariants[] gegeben sind und eine wirklich passt
+- sceneActivityNotes: optional, 1 Satz Stimmung/Licht ergänzend zur Szenenbeschreibung — nur wenn nützlich
+
+OUTPUT-DISZIPLIN:
+- variantName MUSS exakt aus der gegebenen Liste kommen — keine Erfindungen
+- characterName MUSS exakt aus der gegebenen Liste kommen
+- Charaktere ohne guten variant-Treffer einfach weglassen aus variantsByCharacter (NICHT mit leerem String mappen)
+- activity ist auf Deutsch, kurz, konkret, ohne Render-Stil-Beschreibung
+
+Antworte über das tool_use API.`;
+
+const COMPOSE_TOOL = {
+  name: "compose_slide_action",
+  description: "Wähle pro Charakter die passende variant + beschreibe was er konkret macht.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      variantsByCharacter: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            characterName: { type: "string" },
+            variantName: { type: "string" },
+          },
+          required: ["characterName", "variantName"],
+        },
+      },
+      activitiesByCharacter: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            characterName: { type: "string" },
+            activity: { type: "string" },
+          },
+          required: ["characterName", "activity"],
+        },
+      },
+      sceneVariant: { type: "string" },
+      sceneActivityNotes: { type: "string" },
+      reasoning: { type: "string" },
+    },
+    required: ["variantsByCharacter", "activitiesByCharacter", "reasoning"],
+  },
+};
+
+function buildComposeUserMessage(input: ComposeSlideActionInput): string {
+  const { slide, scene, storyTheme, charactersWithVariants, sceneVariants, inspirationSheets } = input;
+
+  const sceneBlock = scene
+    ? `- ${scene.id} slides ${scene.slideRange[0]}-${scene.slideRange[1]}
+- Environment: ${scene.environment}
+- Lock: ${scene.environmentLockNotes || "—"}${scene.transitionToNext ? `\n- Transition zur nächsten Scene: ${scene.transitionToNext}` : ""}`
+    : "(keine Scene-Zuordnung)";
+
+  const charBlocks = charactersWithVariants
+    .filter((c) => slide.charactersInSlide.some((n) => n.toLowerCase() === c.name.toLowerCase()))
+    .map((c) => {
+      if (c.variants.length === 0) {
+        return `Charakter: ${c.name}\n  (keine variants verfügbar — variantsByCharacter weglassen, nur activity beschreiben)`;
+      }
+      const variantList = c.variants
+        .map((v) => `  - ${v.name} [${v.axis}]: ${v.description}`)
+        .join("\n");
+      return `Charakter: ${c.name}\n${variantList}`;
+    })
+    .join("\n\n");
+
+  const sceneVariantBlock =
+    sceneVariants && sceneVariants.length > 0
+      ? `\n\nSCENE-VARIANTS (optional zu setzen):\n${sceneVariants
+          .map((v) => `  - ${v.name} [${v.axis}]: ${v.description}`)
+          .join("\n")}`
+      : "";
+
+  const inspirationBlock =
+    inspirationSheets && inspirationSheets.length > 0
+      ? `\n\nInspiration sheets aus der Library:\n${inspirationSheets
+          .map((s) => `  - asset:${s.assetId} — ${s.visualDescription}`)
+          .join("\n")}`
+      : "";
+
+  return `THEMA: ${storyTheme}
+
+SCENE:
+${sceneBlock}
+
+SLIDE ${slide.slideNumber}:
+- textContent: ${slide.textContent}
+- imagePrompt (aktueller Entwurf): ${slide.imagePrompt}
+- charactersInSlide: ${slide.charactersInSlide.join(", ") || "(keine)"}
+
+CHARAKTERE + verfügbare VARIANTS:
+${charBlocks || "(keine Charaktere mit Variants)"}${sceneVariantBlock}${inspirationBlock}
+
+Rufe das Tool compose_slide_action auf. Pro Charakter: passende variant (oder weglassen) + 1 Satz Aktivität.`;
+}
+
+export async function composeSlideAction(
+  input: ComposeSlideActionInput,
+): Promise<ComposeSlideActionResult> {
+  const client = getAnthropicClient();
+  const claudeModel = input.model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
+
+  const response = await callClaudeWithRetry(
+    client,
+    {
+      model: claudeModel,
+      max_tokens: 1500,
+      system: [
+        {
+          type: "text",
+          text: COMPOSE_SYSTEM,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      tools: [COMPOSE_TOOL],
+      tool_choice: { type: "tool", name: "compose_slide_action" },
+      messages: [{ role: "user", content: buildComposeUserMessage(input) }],
+    },
+    "composeSlideAction",
+  );
+
+  const toolUse = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+  );
+  if (!toolUse) throw new Error("composeSlideAction: no tool_use block in response");
+
+  const raw = toolUse.input as {
+    variantsByCharacter?: Array<{ characterName?: unknown; variantName?: unknown }>;
+    activitiesByCharacter?: Array<{ characterName?: unknown; activity?: unknown }>;
+    sceneVariant?: unknown;
+    sceneActivityNotes?: unknown;
+    reasoning?: unknown;
+  };
+
+  // Defensive: build lookup sets so we can drop hallucinated names.
+  const validCharacterNames = new Set(input.slide.charactersInSlide);
+  const variantNamesByCharacter = new Map<string, Set<string>>();
+  for (const c of input.charactersWithVariants) {
+    variantNamesByCharacter.set(c.name, new Set(c.variants.map((v) => v.name)));
+  }
+  const validSceneVariants = new Set((input.sceneVariants ?? []).map((v) => v.name));
+
+  const variantsByCharacter: Record<string, string> = {};
+  for (const entry of raw.variantsByCharacter ?? []) {
+    if (typeof entry?.characterName !== "string" || typeof entry?.variantName !== "string") continue;
+    const name = entry.characterName.trim();
+    const variant = entry.variantName.trim();
+    if (!validCharacterNames.has(name)) continue;
+    const allowed = variantNamesByCharacter.get(name);
+    if (!allowed || !allowed.has(variant)) continue;
+    variantsByCharacter[name] = variant;
+  }
+
+  const activitiesByCharacter: Record<string, string> = {};
+  for (const entry of raw.activitiesByCharacter ?? []) {
+    if (typeof entry?.characterName !== "string" || typeof entry?.activity !== "string") continue;
+    const name = entry.characterName.trim();
+    const activity = entry.activity.trim();
+    if (!validCharacterNames.has(name) || activity.length === 0) continue;
+    activitiesByCharacter[name] = activity;
+  }
+
+  const sceneVariant =
+    typeof raw.sceneVariant === "string" && validSceneVariants.has(raw.sceneVariant)
+      ? raw.sceneVariant
+      : undefined;
+  const sceneActivityNotes =
+    typeof raw.sceneActivityNotes === "string" && raw.sceneActivityNotes.trim()
+      ? raw.sceneActivityNotes.trim()
+      : undefined;
+
+  return {
+    variantsByCharacter,
+    activitiesByCharacter,
+    sceneVariant,
+    sceneActivityNotes,
+    reasoning: typeof raw.reasoning === "string" ? raw.reasoning : "",
+  };
 }

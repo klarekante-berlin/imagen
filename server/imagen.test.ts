@@ -1,9 +1,54 @@
 import { describe, expect, it, vi } from "vitest";
-import sharp from "sharp";
+
+// composeSlideAction's getAnthropicClient throws if ANTHROPIC_API_KEY is unset;
+// the SDK itself is mocked below so the value isn't actually used.
+process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "test-key";
+
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
-import { prepareCroppedRefForAtlas } from "./_core/imagePrep";
 import { __testables as visionTestables } from "./_core/visionCategorize";
+import { augmentImagePromptWithComposition } from "./storyService";
+import { composeSlideAction } from "./storyPlanner";
+import type { ComposeSlideActionResult } from "./storyPlanner";
+
+// Stub the Anthropic SDK so `composeSlideAction` (the only test that hits it
+// with the real implementation) gets a deterministic tool_use response.
+// Other paths that go through the SDK in this file are mocked at a higher
+// level via `vi.mock("./storyPlanner", …)` / `vi.mock("./_core/visionCategorize", …)`.
+vi.mock("@anthropic-ai/sdk", () => {
+  class MockAnthropic {
+    messages = {
+      create: vi.fn().mockResolvedValue({
+        content: [
+          {
+            type: "tool_use",
+            id: "tool_compose",
+            name: "compose_slide_action",
+            input: {
+              variantsByCharacter: [
+                { characterName: "Toni", variantName: "cooking-apron" },
+                // hallucinated character — must be dropped by validation.
+                { characterName: "Ghost", variantName: "winter-coat" },
+                // hallucinated variant — must be dropped by validation.
+                { characterName: "Mama", variantName: "non-existent" },
+              ],
+              activitiesByCharacter: [
+                { characterName: "Toni", activity: "hält Grillzange, dreht Steak" },
+                { characterName: "Mama", activity: "bereitet Salat vor" },
+                { characterName: "Ghost", activity: "should be dropped" },
+              ],
+              sceneActivityNotes: "warmes Spätsommer-Sonnenlicht",
+              reasoning: "test",
+            },
+          },
+        ],
+        stop_reason: "tool_use",
+        usage: { input_tokens: 10, output_tokens: 10 },
+      }),
+    };
+  }
+  return { default: MockAnthropic };
+});
 
 // Mock DB helpers
 vi.mock("./db", () => ({
@@ -56,47 +101,58 @@ vi.mock("./_core/visionCategorize", async () => {
   };
 });
 
-vi.mock("./storyPlanner", () => ({
-  planStory: vi.fn().mockResolvedValue({
-    title: "Test Plan",
-    suggestedSlideCount: 6,
-    reasoning: "test reasoning",
-    scenes: [{ id: "scene-1", slideRange: [1, 6], environment: "Berlin", environmentLockNotes: "" }],
-    detectedEntities: [],
-  }),
-  writeStorySlides: vi.fn().mockResolvedValue({
-    consistencyContext: {
-      version: 2,
-      artStyle: "cartoon",
-      colorPalette: "warm",
+// Keep `composeSlideAction` real (its test mocks the Anthropic SDK directly).
+// Mock only the heavy planner helpers used by the router tests.
+vi.mock("./storyPlanner", async () => {
+  const real = await vi.importActual<typeof import("./storyPlanner")>("./storyPlanner");
+  return {
+    ...real,
+    planStory: vi.fn().mockResolvedValue({
+      title: "Test Plan",
+      suggestedSlideCount: 6,
+      reasoning: "test reasoning",
       scenes: [{ id: "scene-1", slideRange: [1, 6], environment: "Berlin", environmentLockNotes: "" }],
-      characters: [],
-      globalStylePrompt: "test",
-      styleReferenceUrls: [],
-      worldBuiltAssetIds: [],
-      slideCount: 6,
-    },
-    slides: Array.from({ length: 6 }, (_, i) => ({
-      slideNumber: i + 1,
-      sceneId: "scene-1",
-      textContent: `Slide ${i + 1}`,
-      caption: `Cap ${i + 1}`,
-      charactersInSlide: [],
-      imagePrompt: `Prompt ${i + 1}`,
-    })),
-  }),
-  scoreCharacterMatches: vi.fn().mockReturnValue([]),
-}));
+      detectedEntities: [],
+    }),
+    writeStorySlides: vi.fn().mockResolvedValue({
+      consistencyContext: {
+        version: 2,
+        artStyle: "cartoon",
+        colorPalette: "warm",
+        scenes: [{ id: "scene-1", slideRange: [1, 6], environment: "Berlin", environmentLockNotes: "" }],
+        characters: [],
+        globalStylePrompt: "test",
+        styleReferenceUrls: [],
+        worldBuiltAssetIds: [],
+        slideCount: 6,
+      },
+      slides: Array.from({ length: 6 }, (_, i) => ({
+        slideNumber: i + 1,
+        sceneId: "scene-1",
+        textContent: `Slide ${i + 1}`,
+        caption: `Cap ${i + 1}`,
+        charactersInSlide: [],
+        imagePrompt: `Prompt ${i + 1}`,
+      })),
+    }),
+    scoreCharacterMatches: vi.fn().mockReturnValue([]),
+  };
+});
 
-vi.mock("./storyService", () => ({
-  generateSlideImage: vi.fn().mockResolvedValue({ imageKey: "test/key.png", imageUrl: "/manus-storage/test/key.png" }),
-  generateSlideImageFreepik: vi.fn().mockResolvedValue({ imageKey: "test/key.png", imageUrl: "/manus-storage/test/key.png" }),
-  getPresignedStorageUrl: vi.fn().mockResolvedValue(null),
-  getVariantPresignedUrl: vi.fn().mockResolvedValue(null),
-  normalizeConsistencyContext: vi.fn().mockImplementation((raw: unknown) => raw),
-  findSceneForSlide: vi.fn().mockReturnValue(null),
-  deriveSceneSlideRanges: vi.fn().mockImplementation((scenes: unknown) => scenes),
-}));
+// `augmentImagePromptWithComposition` is a pure function — keep the real
+// implementation alongside the mocked Atlas/storage helpers below.
+vi.mock("./storyService", async () => {
+  const real = await vi.importActual<typeof import("./storyService")>("./storyService");
+  return {
+    ...real,
+    generateSlideImage: vi.fn().mockResolvedValue({ imageKey: "test/key.png", imageUrl: "/manus-storage/test/key.png" }),
+    generateSlideImageFreepik: vi.fn().mockResolvedValue({ imageKey: "test/key.png", imageUrl: "/manus-storage/test/key.png" }),
+    getPresignedStorageUrl: vi.fn().mockResolvedValue(null),
+    normalizeConsistencyContext: vi.fn().mockImplementation((raw: unknown) => raw),
+    findSceneForSlide: vi.fn().mockReturnValue(null),
+    deriveSceneSlideRanges: vi.fn().mockImplementation((scenes: unknown) => scenes),
+  };
+});
 
 vi.mock("./storage", () => ({
   storagePut: vi.fn().mockResolvedValue({ key: "test/key.png", url: "/manus-storage/test/key.png" }),
@@ -184,86 +240,130 @@ describe("stories router", () => {
 
 // ─── Variants infrastructure ──────────────────────────────────────────────────
 
-describe("prepareCroppedRefForAtlas", () => {
-  it("crops a region and returns a JPEG with the expected dimensions", async () => {
-    // 200x100 white PNG.
-    const sourcePng = await sharp({
-      create: { width: 200, height: 100, channels: 3, background: { r: 255, g: 255, b: 255 } },
-    })
-      .png()
-      .toBuffer();
-
-    const out = await prepareCroppedRefForAtlas(sourcePng, "image/png", [50, 25, 100, 50]);
-    expect(out.mediaType).toBe("image/jpeg");
-    expect(out.buffer.length).toBeGreaterThan(0);
-
-    const meta = await sharp(out.buffer).metadata();
-    expect(meta.format).toBe("jpeg");
-    expect(meta.width).toBe(100);
-    expect(meta.height).toBe(50);
-  });
-
-  it("rejects an out-of-bounds bbox", async () => {
-    const sourcePng = await sharp({
-      create: { width: 50, height: 50, channels: 3, background: { r: 0, g: 0, b: 0 } },
-    })
-      .png()
-      .toBuffer();
-    await expect(
-      prepareCroppedRefForAtlas(sourcePng, "image/png", [0, 0, 200, 200]),
-    ).rejects.toThrow(/exceeds source/);
-  });
-
-  it("rejects a zero-area bbox", async () => {
-    const sourcePng = await sharp({
-      create: { width: 50, height: 50, channels: 3, background: { r: 0, g: 0, b: 0 } },
-    })
-      .png()
-      .toBuffer();
-    await expect(
-      prepareCroppedRefForAtlas(sourcePng, "image/png", [10, 10, 0, 10]),
-    ).rejects.toThrow(/invalid bbox/);
-  });
-});
-
 describe("extractVariantsFromSheet validation", () => {
   it("normaliseVariant accepts a well-formed entry", () => {
-    const v = visionTestables.normaliseVariant(
-      { name: "cooking-apron", axis: "outfit", bbox: [0, 0, 100, 100], description: "Schürze" },
-      500,
-      500,
-    );
+    const v = visionTestables.normaliseVariant({
+      name: "cooking-apron",
+      axis: "outfit",
+      description: "Schürze",
+    });
     expect(v).not.toBeNull();
     expect(v?.name).toBe("cooking-apron");
-    expect(v?.bbox).toEqual([0, 0, 100, 100]);
+    expect(v?.description).toBe("Schürze");
+    // bbox is no longer extracted — should be undefined.
+    expect(v?.bbox).toBeUndefined();
   });
 
-  it("normaliseVariant rejects out-of-bounds bbox", () => {
-    const v = visionTestables.normaliseVariant(
-      { name: "x", axis: "outfit", bbox: [0, 0, 600, 100], description: "d" },
-      500,
-      500,
-    );
+  it("normaliseVariant rejects missing description", () => {
+    const v = visionTestables.normaliseVariant({
+      name: "x",
+      axis: "outfit",
+      description: "",
+    });
     expect(v).toBeNull();
   });
 
   it("normaliseVariant rejects unknown axis", () => {
-    const v = visionTestables.normaliseVariant(
-      { name: "x", axis: "weather", bbox: [0, 0, 10, 10], description: "d" },
-      500,
-      500,
-    );
+    const v = visionTestables.normaliseVariant({
+      name: "x",
+      axis: "weather",
+      description: "d",
+    });
     expect(v).toBeNull();
   });
 
   it("dedupeVariantNames suffixes collisions in order", () => {
     const out = visionTestables.dedupeVariantNames([
-      { name: "outfit", axis: "outfit", bbox: [0, 0, 1, 1], description: "a" },
-      { name: "outfit", axis: "outfit", bbox: [0, 0, 1, 1], description: "b" },
-      { name: "other", axis: "outfit", bbox: [0, 0, 1, 1], description: "c" },
-      { name: "outfit", axis: "outfit", bbox: [0, 0, 1, 1], description: "d" },
+      { name: "outfit", axis: "outfit", description: "a" },
+      { name: "outfit", axis: "outfit", description: "b" },
+      { name: "other", axis: "outfit", description: "c" },
+      { name: "outfit", axis: "outfit", description: "d" },
     ]);
     expect(out.map((v) => v.name)).toEqual(["outfit", "outfit-2", "other", "outfit-3"]);
+  });
+});
+
+// ─── Composer ────────────────────────────────────────────────────────────────
+
+describe("composeSlideAction", () => {
+  it("returns shape with variants + activities, drops hallucinated names", async () => {
+    const result = await composeSlideAction({
+      slide: {
+        slideNumber: 1,
+        textContent: "Test",
+        imagePrompt: "draft",
+        charactersInSlide: ["Toni", "Mama"],
+        sceneId: "scene-1",
+      },
+      scene: null,
+      storyTheme: "Sommerfest",
+      charactersWithVariants: [
+        {
+          name: "Toni",
+          variants: [{ name: "cooking-apron", axis: "outfit", description: "Schürze" }],
+        },
+        {
+          name: "Mama",
+          variants: [{ name: "summer-dress", axis: "outfit", description: "Sommerkleid" }],
+        },
+      ],
+      model: "claude-sonnet-4-6",
+    });
+
+    expect(result.variantsByCharacter).toEqual({ Toni: "cooking-apron" });
+    expect(result.activitiesByCharacter).toEqual({
+      Toni: "hält Grillzange, dreht Steak",
+      Mama: "bereitet Salat vor",
+    });
+    expect(result.sceneActivityNotes).toBe("warmes Spätsommer-Sonnenlicht");
+    expect(result.reasoning).toBe("test");
+  });
+});
+
+describe("augmentImagePromptWithComposition", () => {
+  it("appends character details + scene mood when both variant and activity exist", () => {
+    const composition: ComposeSlideActionResult = {
+      variantsByCharacter: { Toni: "cooking-apron", Mama: "summer-dress" },
+      activitiesByCharacter: {
+        Toni: "hält Grillzange, dreht Steak",
+        Mama: "bereitet Salat in Schüssel vor",
+        Lily: "sitzt auf Decke, malt mit Buntstiften",
+      },
+      sceneActivityNotes: "warmes Spätsommer-Sonnenlicht",
+      reasoning: "",
+    };
+    const variantDescriptions = new Map<string, string>([
+      ["Toni", "kariertes Hemd, weiße Schürze"],
+      ["Mama", "leichtes Sommerkleid, Strohhut"],
+    ]);
+
+    const out = augmentImagePromptWithComposition(
+      "Base prompt.",
+      composition,
+      ["Toni", "Mama", "Lily"],
+      variantDescriptions,
+    );
+
+    expect(out).toContain("Base prompt.");
+    expect(out).toContain("Character details:");
+    expect(out).toContain(
+      "- Toni: COOKING-APRON variant (kariertes Hemd, weiße Schürze) — hält Grillzange, dreht Steak",
+    );
+    expect(out).toContain(
+      "- Mama: SUMMER-DRESS variant (leichtes Sommerkleid, Strohhut) — bereitet Salat in Schüssel vor",
+    );
+    expect(out).toContain("- Lily — sitzt auf Decke, malt mit Buntstiften");
+    expect(out).toContain("Scene mood: warmes Spätsommer-Sonnenlicht");
+  });
+
+  it("returns base prompt unchanged when nothing to add", () => {
+    const composition: ComposeSlideActionResult = {
+      variantsByCharacter: {},
+      activitiesByCharacter: {},
+      reasoning: "",
+    };
+    const out = augmentImagePromptWithComposition("Just the base.", composition, ["Toni"], new Map());
+    expect(out).toBe("Just the base.");
   });
 });
 

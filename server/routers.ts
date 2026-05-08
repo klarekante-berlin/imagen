@@ -14,7 +14,7 @@ import {
 import { storagePut } from "./storage";
 import {
   generateSlideImage, generateSlideImageFreepik,
-  getPresignedStorageUrl, getVariantPresignedUrl,
+  getPresignedStorageUrl,
   normalizeConsistencyContext,
   findSceneForSlide,
   deriveSceneSlideRanges,
@@ -883,10 +883,11 @@ const generateRouter = router({
       // Get all used assets with their image URLs for reference
       const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
 
-      // Resolve per-character ref assets once; the actual presigned URL is
-      // computed PER SLIDE because variant selection lives on the slide.
-      // TODO(selector branches): wire scene-env variants too — currently only
-      // character-axis variants are honoured. See `slide.selectedVariants` keys.
+      // Resolve per-character ref assets. Full character sheets always go to
+      // Atlas — no per-slide variant cropping. The composer LLM (storyPlanner)
+      // bakes the chosen variant + activity into `slide.imagePrompt` at
+      // story-generation time so gpt-image-2 picks the right panel from prompt
+      // context.
       const characterRefs = (ctx.characters || [])
         .filter((char) => char.assetId && char.assetId > 0)
         .map((char) => {
@@ -922,15 +923,10 @@ const generateRouter = router({
           try {
             await updateSlide(slide.id, { status: "generating" });
 
-            // Resolve per-slide character ref URLs, honouring variant
-            // selection on the slide. Falls back to the full sheet when
-            // selectedVariants is empty for this character.
-            const selected = (slide.selectedVariants as Record<string, string> | null) ?? {};
+            // Always presign the full character sheet — variant selection
+            // lives in `slide.imagePrompt`, not in the storage key.
             const charRefPresigned = await Promise.all(
-              characterRefs.map((r) => {
-                const variantName = selected[`character:${r.name}`] ?? null;
-                return getVariantPresignedUrl(r.asset!, variantName);
-              }),
+              characterRefs.map((r) => getPresignedStorageUrl(r.asset!.imageUrl ?? "")),
             );
             const characterAssetMap = new Map<string, string>();
             characterRefs.forEach((r, i) => {
@@ -1097,9 +1093,9 @@ async function regenerateSlideImage(
   if (!imagePrompt) throw new Error("Slide has no image prompt");
   const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
 
-  // Build character reference map with presigned absolute URLs for Atlas Cloud,
-  // honouring per-slide variant selection. TODO(selector branches): wire
-  // scene-env variants here too once selectors emit "scene:<id>" keys.
+  // Build character reference map with presigned absolute URLs for Atlas
+  // Cloud. Full sheets always — variant selection is baked into `imagePrompt`
+  // by the composer step at story-generation time.
   const characterRefs = (ctx.characters || [])
     .filter((char) => char.assetId && char.assetId > 0)
     .map((char) => {
@@ -1107,12 +1103,8 @@ async function regenerateSlideImage(
       return { name: char.name, asset };
     })
     .filter((r) => r.asset?.imageUrl);
-  const selected = (slide.selectedVariants as Record<string, string> | null) ?? {};
   const presigned = await Promise.all(
-    characterRefs.map((r) => {
-      const variantName = selected[`character:${r.name}`] ?? null;
-      return getVariantPresignedUrl(r.asset!, variantName);
-    }),
+    characterRefs.map((r) => getPresignedStorageUrl(r.asset!.imageUrl ?? "")),
   );
   const characterAssetMap = new Map<string, string>();
   characterRefs.forEach((r, i) => {

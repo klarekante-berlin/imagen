@@ -3,6 +3,10 @@
  * predate the variants pipeline. Mirrors the on-upload flow — calls
  * `extractVariantsFromSheet` against each candidate asset's image.
  *
+ * Backfill v2: bbox is no longer required; variants describe panels by
+ * name + description only. Re-extraction will produce variants without
+ * bboxes (the new tool doesn't ask for them) — that's expected.
+ *
  * Idempotent: by default skips assets where `variants` is already non-null.
  * Pass `--force` to re-extract.
  *
@@ -14,8 +18,6 @@
  */
 
 import "dotenv/config";
-
-import sharp from "sharp";
 
 import { getAssetById, getAssets, updateAsset } from "../server/db";
 import { extractVariantsFromSheet } from "../server/_core/visionCategorize";
@@ -69,14 +71,6 @@ async function processAsset(asset: Asset, args: CliArgs): Promise<"updated" | "s
     return "failed";
   }
 
-  const meta = await sharp(bytes.buffer).metadata();
-  const imageWidth = meta.width ?? 0;
-  const imageHeight = meta.height ?? 0;
-  if (imageWidth === 0 || imageHeight === 0) {
-    console.warn(`[asset ${asset.id}] "${asset.name}" — could not read dimensions`);
-    return "failed";
-  }
-
   const presigned = await getPresignedStorageUrl(asset.imageUrl);
   const source =
     presigned && presigned.startsWith("http")
@@ -91,8 +85,6 @@ async function processAsset(asset: Asset, args: CliArgs): Promise<"updated" | "s
     isCharacterSheet: asset.isCharacterSheet,
     assetCategory: asset.category,
     visualDescription: asset.visualDescription ?? "",
-    imageWidth,
-    imageHeight,
   });
 
   if (variants.length === 0) {
