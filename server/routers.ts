@@ -4,6 +4,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
 import {
   createAsset, getAssets, getAssetById, getAssetsByIds, updateAsset, deleteAsset,
+  bulkDeleteAssets,
   getAssetByContentHash, bulkApproveHighConfidence,
   createStory, getStories, getStoryById, updateStory, deleteStory,
   createSlides, getSlidesByStoryId, getSlideById, updateSlide, updateSlideByStoryAndNumber,
@@ -228,6 +229,13 @@ const assetRouter = router({
     .mutation(async ({ input }) => {
       await deleteAsset(input.id);
       return { success: true };
+    }),
+
+  bulkDelete: publicProcedure
+    .input(z.object({ ids: z.array(z.number().int().positive()).min(1).max(500) }))
+    .mutation(async ({ input }) => {
+      const deleted = await bulkDeleteAssets(input.ids);
+      return { success: true, deleted };
     }),
 
   categories: publicProcedure.query(() => ASSET_CATEGORIES),
