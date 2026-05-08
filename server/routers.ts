@@ -692,6 +692,49 @@ const storyRouter = router({
     }),
 
   /**
+   * Reorder `consistencyContext.scenes` per the provided sceneId order.
+   * Input must contain exactly the same set of sceneIds as currently exist
+   * (no missing, no extras). Does NOT touch `slideRange` — see design doc §6
+   * (slideRange may go stale; auto-recompute is a separate follow-up).
+   */
+  reorderScenes: publicProcedure
+    .input(z.object({
+      storyId: z.number().int().positive(),
+      sceneIds: z.array(z.string().min(1)).min(1),
+    }))
+    .mutation(async ({ input }) => {
+      const story = await getStoryById(input.storyId);
+      if (!story) throw new Error("Story not found");
+      const ctx = normalizeConsistencyContext(story.consistencyContext);
+      if (!ctx) throw new Error("Story has invalid consistency context");
+
+      const existingIds = ctx.scenes.map((s) => s.id);
+      const inputIds = input.sceneIds;
+      if (inputIds.length !== existingIds.length) {
+        throw new Error(
+          `reorderScenes expects ${existingIds.length} sceneIds, got ${inputIds.length}`,
+        );
+      }
+      const existingSet = new Set(existingIds);
+      const inputSet = new Set(inputIds);
+      if (inputSet.size !== inputIds.length) {
+        throw new Error("reorderScenes: duplicate sceneIds in input");
+      }
+      for (const id of inputIds) {
+        if (!existingSet.has(id)) {
+          throw new Error(`reorderScenes: unknown sceneId "${id}"`);
+        }
+      }
+
+      const byId = new Map(ctx.scenes.map((s) => [s.id, s]));
+      const nextScenes = inputIds.map((id) => byId.get(id)!);
+      await updateStory(input.storyId, {
+        consistencyContext: { ...ctx, scenes: nextScenes },
+      });
+      return { success: true };
+    }),
+
+  /**
    * Remove an empty scene from `consistencyContext.scenes`. Refuses to delete
    * if any slide still references this sceneId (caller should reassign first).
    * Does NOT renumber surviving scenes. See design doc §6.
