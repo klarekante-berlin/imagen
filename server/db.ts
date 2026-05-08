@@ -258,3 +258,18 @@ export async function deleteSlide(id: number): Promise<void> {
   if (!db) throw new Error("Database not available");
   await db.delete(slides).where(eq(slides.id, id));
 }
+
+/**
+ * Mark all slides in `storyId` whose `sceneId` matches as needing regen.
+ * Used by `stories.updateScene` so every slide in the edited scene flips its
+ * yellow "regenerate to apply" strip on. Returns affectedRows.
+ */
+export async function markSlidesNeedingRegen(storyId: number, sceneId: string): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db
+    .update(slides)
+    .set({ needsRegen: true })
+    .where(and(eq(slides.storyId, storyId), eq(slides.sceneId, sceneId)));
+  return (result as unknown as { affectedRows?: number }).affectedRows ?? 0;
+}
