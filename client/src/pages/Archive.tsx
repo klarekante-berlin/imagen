@@ -153,7 +153,7 @@ export default function Archive() {
                         <Button
                           size="icon"
                           variant="ghost"
-                          className="h-8 w-8 text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="h-8 w-8 text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
                           onClick={() => duplicateMutation.mutate({ id: story.id })}
                           title="Duplizieren"
                         >
@@ -162,7 +162,7 @@ export default function Archive() {
                         <Button
                           size="icon"
                           variant="ghost"
-                          className="h-8 w-8 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="h-8 w-8 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
                           onClick={() => setDeleteId(story.id)}
                           title="Löschen"
                         >
