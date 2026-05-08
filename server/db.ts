@@ -103,6 +103,15 @@ export async function deleteAsset(id: number): Promise<void> {
   await db.delete(assets).where(eq(assets.id, id));
 }
 
+export async function bulkDeleteAssets(ids: number[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db.delete(assets).where(inArray(assets.id, ids));
+  // drizzle returns ResultSetHeader for mysql; affectedRows is what we want.
+  return (result as unknown as { affectedRows?: number }).affectedRows ?? ids.length;
+}
+
 // ─── Characters ───────────────────────────────────────────────────────────────
 
 export async function createCharacter(data: InsertCharacter): Promise<number> {

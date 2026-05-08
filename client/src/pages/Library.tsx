@@ -13,6 +13,16 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -20,6 +30,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import {
@@ -84,6 +95,20 @@ export default function Library() {
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
   const [editAsset, setEditAsset] = useState<Asset | null>(null);
 
+  // Multi-select state. Permanently visible checkboxes; bar appears when ≥1 picked.
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkDeleteConfirmOpen, setBulkDeleteConfirmOpen] = useState(false);
+
+  const toggleSelect = (id: number) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const clearSelection = () => setSelectedIds(new Set());
+  const selectAll = (visibleIds: number[]) => setSelectedIds(new Set(visibleIds));
+
   // Multi-file upload state
   const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
   const [uploadHint, setUploadHint] = useState<string>("none");
@@ -132,6 +157,16 @@ export default function Library() {
   const bulkApproveMutation = trpc.assets.bulkApprove.useMutation({
     onSuccess: (res) => {
       toast.success(`${res.approved} Asset(s) genehmigt`);
+      utils.assets.list.invalidate();
+    },
+    onError: (err) => toast.error(`Fehler: ${err.message}`),
+  });
+
+  const bulkDeleteMutation = trpc.assets.bulkDelete.useMutation({
+    onSuccess: (res) => {
+      toast.success(`${res.deleted} Asset(s) gelöscht`);
+      clearSelection();
+      setBulkDeleteConfirmOpen(false);
       utils.assets.list.invalidate();
     },
     onError: (err) => toast.error(`Fehler: ${err.message}`),
@@ -396,6 +431,37 @@ export default function Library() {
           )}
         </div>
 
+        {/* Bulk-action bar — visible only when ≥1 asset selected */}
+        {selectedIds.size > 0 && (
+          <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-card/95 backdrop-blur px-3 py-2 shadow-sm">
+            <Badge variant="secondary" className="gap-1">
+              {selectedIds.size} ausgewählt
+            </Badge>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => selectAll(filteredAssets.map((a) => a.id))}
+            >
+              Alle auswählen ({filteredAssets.length})
+            </Button>
+            <Button size="sm" variant="ghost" onClick={clearSelection}>
+              Auswahl aufheben
+            </Button>
+            <div className="ml-auto flex gap-2">
+              <Button
+                size="sm"
+                variant="destructive"
+                className="gap-2"
+                onClick={() => setBulkDeleteConfirmOpen(true)}
+                disabled={bulkDeleteMutation.isPending}
+              >
+                <TrashIcon className="w-4 h-4" />
+                Löschen
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Asset Grid */}
         {isLoading ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
@@ -416,10 +482,14 @@ export default function Library() {
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-            {filteredAssets.map((asset) => (
+            {filteredAssets.map((asset) => {
+              const isSelected = selectedIds.has(asset.id);
+              return (
               <Card
                 key={asset.id}
-                className="group bg-card border-border hover:border-primary/40 transition-all cursor-pointer overflow-hidden"
+                className={`group bg-card border-border hover:border-primary/40 transition-all cursor-pointer overflow-hidden ${
+                  isSelected ? "ring-2 ring-primary" : ""
+                }`}
               >
                 <div className="relative aspect-square bg-muted">
                   <img
@@ -428,6 +498,22 @@ export default function Library() {
                     className="w-full h-full object-cover"
                     loading="lazy"
                   />
+                  {/* Permanent multi-select checkbox — top-left. Stops propagation
+                      so the card's overlay/preview handlers don't fire. */}
+                  <div
+                    className="absolute top-2 left-2 z-10 flex items-center justify-center rounded-md bg-background/80 backdrop-blur p-1 shadow-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleSelect(asset.id);
+                    }}
+                  >
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={() => toggleSelect(asset.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label={`Asset ${asset.name} auswählen`}
+                    />
+                  </div>
                   {asset.reviewStatus === "needs_review" && (
                     <Badge
                       variant="destructive"
@@ -479,7 +565,8 @@ export default function Library() {
                   </div>
                 </CardContent>
               </Card>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -804,6 +891,34 @@ export default function Library() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Bulk Delete Confirm */}
+      <AlertDialog open={bulkDeleteConfirmOpen} onOpenChange={setBulkDeleteConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="font-display">
+              {selectedIds.size} Asset(s) löschen?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Diese Aktion kann nicht rückgängig gemacht werden. Die ausgewählten Assets werden
+              dauerhaft entfernt.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkDeleteMutation.isPending}>Abbrechen</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(e) => {
+                e.preventDefault(); // keep dialog open until mutation resolves
+                bulkDeleteMutation.mutate({ ids: Array.from(selectedIds) });
+              }}
+              disabled={bulkDeleteMutation.isPending}
+            >
+              {bulkDeleteMutation.isPending ? "Lösche…" : "Löschen"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Delete Confirm */}
       <Dialog open={deleteConfirm !== null} onOpenChange={() => setDeleteConfirm(null)}>
