@@ -171,6 +171,12 @@ export const slides = mysqlTable(
     caption: text("caption"),
     /** Characters appearing in this specific slide */
     charactersInSlide: json("charactersInSlide").$type<string[]>(),
+    /**
+     * Scene this slide belongs to. Free-string FK to
+     * `consistencyContext.scenes[].id` (e.g. "scene-1"). Nullable for legacy
+     * rows pre-migration; backfill via `scripts/backfill-slide-scene-id.ts`.
+     */
+    sceneId: varchar("sceneId", { length: 64 }),
     /** Full image generation prompt */
     imagePrompt: text("imagePrompt"),
     /** S3 key for generated image */
@@ -184,6 +190,7 @@ export const slides = mysqlTable(
   },
   (t) => ({
     storyIdx: index("slides_story_idx").on(t.storyId),
+    sceneIdIdx: index("slides_scene_id_idx").on(t.sceneId),
   })
 );
 

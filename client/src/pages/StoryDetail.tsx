@@ -14,6 +14,11 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -38,6 +43,8 @@ import {
   ArrowUpIcon,
   ArrowDownIcon,
   AlertTriangleIcon,
+  LayersIcon,
+  CheckIcon,
 } from "lucide-react";
 import type { Slide } from "../../../drizzle/schema";
 import { STATUS_CONFIG } from "@/const";
@@ -68,10 +75,34 @@ export default function StoryDetail() {
     onError: (err) => toast.error(`Fehler: ${err.message}`),
   });
 
+  // Slide IDs whose scene was reassigned in this session — used to show the
+  // "Regenerate to apply" yellow strip. Cleared per-slide on regen success.
+  const [recentlyMovedSlideIds, setRecentlyMovedSlideIds] = useState<Set<number>>(new Set());
+
   const regenerateSlide = trpc.generate.regenerateSlide.useMutation({
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       toast.success("Slide neu generiert!");
       utils.stories.get.invalidate({ id: storyId });
+      setRecentlyMovedSlideIds((prev) => {
+        if (!prev.has(vars.slideId)) return prev;
+        const next = new Set(prev);
+        next.delete(vars.slideId);
+        return next;
+      });
+    },
+    onError: (err) => toast.error(`Fehler: ${err.message}`),
+  });
+
+  const assignScene = trpc.slides.assignScene.useMutation({
+    onSuccess: (_data, vars) => {
+      toast.success("Slide neuer Scene zugewiesen");
+      utils.stories.get.invalidate({ id: storyId });
+      setRecentlyMovedSlideIds((prev) => {
+        const next = new Set(prev);
+        next.add(vars.slideId);
+        return next;
+      });
+      setScenePopoverOpen(false);
     },
     onError: (err) => toast.error(`Fehler: ${err.message}`),
   });
@@ -81,13 +112,26 @@ export default function StoryDetail() {
     onError: (err) => toast.error(`Fehler: ${err.message}`),
   });
 
+  // Tracks "save then immediately regenerate" so onSuccess of updateContent
+  // can chain into regenerateSlide before closing the dialog.
+  const [chainRegenAfterSave, setChainRegenAfterSave] = useState(false);
+
   const updateSlideContent = trpc.slides.updateContent.useMutation({
-    onSuccess: () => {
-      toast.success("Slide gespeichert");
+    onSuccess: (_data, vars) => {
       utils.stories.get.invalidate({ id: storyId });
+      if (chainRegenAfterSave) {
+        setChainRegenAfterSave(false);
+        regenerateSlide.mutate({ slideId: vars.slideId });
+        toast.success("Gespeichert — generiere neu…");
+      } else {
+        toast.success("Slide gespeichert");
+      }
       setEditingSlideId(null);
     },
-    onError: (err) => toast.error(`Fehler: ${err.message}`),
+    onError: (err) => {
+      setChainRegenAfterSave(false);
+      toast.error(`Fehler: ${err.message}`);
+    },
   });
 
   const deleteSlideMutation = trpc.slides.delete.useMutation({
@@ -120,6 +164,9 @@ export default function StoryDetail() {
   const [editImagePrompt, setEditImagePrompt] = useState("");
   const [editCaption, setEditCaption] = useState("");
   const [deleteSlideId, setDeleteSlideId] = useState<number | null>(null);
+
+  // Scene-picker popover state
+  const [scenePopoverOpen, setScenePopoverOpen] = useState(false);
 
   // ConsistencyContext edit state
   const [ctxEditOpen, setCtxEditOpen] = useState(false);
@@ -165,8 +212,9 @@ export default function StoryDetail() {
     setEditCaption(slide.caption ?? "");
   };
 
-  const handleSaveSlide = () => {
+  const handleSaveSlide = (alsoRegenerate = false) => {
     if (editingSlideId === null) return;
+    setChainRegenAfterSave(alsoRegenerate);
     updateSlideContent.mutate({
       slideId: editingSlideId,
       textContent: editTextContent,
@@ -220,8 +268,24 @@ export default function StoryDetail() {
   const allComplete = completedSlides === slides.length && slides.length > 0;
   const isGenerating = story.status === "generating_images" || generateImages.isPending;
   const currentSlide = slides[activeSlide];
+
+  type SceneShape = {
+    id: string;
+    environment?: string;
+    environmentLockNotes?: string;
+    transitionToNext?: string;
+    slideRange?: [number, number];
+  };
   const rawCtx = story.consistencyContext as
-    | { artStyle?: string; colorPalette?: string; environment?: string; scenes?: Array<{ environment?: string; slideRange?: [number, number] }>; characters?: Array<{ name: string; outfit: string }>; slideCount?: number; version?: number }
+    | {
+        artStyle?: string;
+        colorPalette?: string;
+        environment?: string;
+        scenes?: SceneShape[];
+        characters?: Array<{ name: string; outfit: string }>;
+        slideCount?: number;
+        version?: number;
+      }
     | null;
   const ctx = rawCtx
     ? {
@@ -234,6 +298,29 @@ export default function StoryDetail() {
         scenes: rawCtx.scenes,
       }
     : null;
+
+  // Order scenes by their declared slideRange start; fallback to array index.
+  const scenes: SceneShape[] = (ctx?.scenes ?? []).slice().sort((a, b) => {
+    const aStart = a.slideRange?.[0] ?? 0;
+    const bStart = b.slideRange?.[0] ?? 0;
+    return aStart - bStart;
+  });
+  const sceneIndexById = new Map(scenes.map((s, i) => [s.id, i]));
+  const sceneLabel = (sceneId: string | null | undefined): string => {
+    if (!sceneId) return "Ohne Scene";
+    const idx = sceneIndexById.get(sceneId);
+    return idx === undefined ? sceneId : `Scene ${idx + 1}`;
+  };
+  const slidesByScene = new Map<string, Slide[]>();
+  for (const s of scenes) slidesByScene.set(s.id, []);
+  const slidesWithoutScene: Slide[] = [];
+  for (const sl of slides) {
+    if (sl.sceneId && slidesByScene.has(sl.sceneId)) {
+      slidesByScene.get(sl.sceneId)!.push(sl);
+    } else {
+      slidesWithoutScene.push(sl);
+    }
+  }
 
   const storyStatus = STATUS_CONFIG[story.status as keyof typeof STATUS_CONFIG] || STATUS_CONFIG.draft;
 
@@ -304,7 +391,7 @@ export default function StoryDetail() {
                   Bearbeiten
                 </Button>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                 {ctx.artStyle && (
                   <div className="bg-muted rounded-lg p-3">
                     <span className="text-muted-foreground block mb-1">Kunststil</span>
@@ -315,12 +402,6 @@ export default function StoryDetail() {
                   <div className="bg-muted rounded-lg p-3">
                     <span className="text-muted-foreground block mb-1">Farbpalette</span>
                     <span className="text-foreground">{ctx.colorPalette}</span>
-                  </div>
-                )}
-                {ctx.environment && (
-                  <div className="bg-muted rounded-lg p-3">
-                    <span className="text-muted-foreground block mb-1">Umgebung</span>
-                    <span className="text-foreground">{ctx.environment}</span>
                   </div>
                 )}
               </div>
@@ -334,6 +415,60 @@ export default function StoryDetail() {
                   ))}
                 </div>
               )}
+
+              {/* Per-scene listing — derived "Slides per scene" (read-only MVP). */}
+              {scenes.length > 0 && (
+                <div className="mt-4 border-t border-border pt-3 space-y-2">
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                    Szenen ({scenes.length})
+                  </p>
+                  {scenes.map((s, i) => {
+                    const sceneSlides = (slidesByScene.get(s.id) ?? [])
+                      .slice()
+                      .sort((a, b) => a.slideNumber - b.slideNumber);
+                    const numbers = sceneSlides.map((sl) => sl.slideNumber);
+                    return (
+                      <div key={s.id} className="bg-muted rounded-lg p-3 text-xs space-y-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-medium text-foreground">Scene {i + 1}</span>
+                            {s.environment && (
+                              <span className="text-muted-foreground">{s.environment}</span>
+                            )}
+                          </div>
+                          <span className="text-[11px] text-muted-foreground whitespace-nowrap">
+                            {numbers.length === 0
+                              ? "0 slides — leer"
+                              : `${numbers.length} slide${numbers.length > 1 ? "s" : ""} · ${numbers.join(", ")}`}
+                          </span>
+                        </div>
+                        {s.environmentLockNotes && (
+                          <p className="text-[11px] text-muted-foreground">
+                            <span className="font-medium">Lock:</span> {s.environmentLockNotes}
+                          </p>
+                        )}
+                        {s.transitionToNext && (
+                          <p className="text-[11px] text-muted-foreground">
+                            <span className="font-medium">Übergang:</span> {s.transitionToNext}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {slidesWithoutScene.length > 0 && (
+                    <div className="bg-muted/50 border border-dashed border-border rounded-lg p-3 text-xs">
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="font-medium text-foreground">Ohne Scene</span>
+                        <span className="text-[11px] text-muted-foreground whitespace-nowrap">
+                          {slidesWithoutScene.length} slide{slidesWithoutScene.length > 1 ? "s" : ""}
+                          {" · "}
+                          {slidesWithoutScene.map((sl) => sl.slideNumber).sort((a, b) => a - b).join(", ")}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
@@ -344,10 +479,100 @@ export default function StoryDetail() {
           <div className="lg:col-span-2">
             {currentSlide && (
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-display font-semibold text-foreground">
-                    Slide {currentSlide.slideNumber} / {slides.length}
-                  </h3>
+                <div className="flex items-start justify-between gap-2 flex-wrap">
+                  <div className="space-y-1.5">
+                    <h3 className="font-display font-semibold text-foreground">
+                      Slide {currentSlide.slideNumber} / {slides.length}
+                    </h3>
+                    {/* Scene pill + per-slide character chips */}
+                    <div className="flex items-center gap-2 flex-wrap text-xs">
+                      {scenes.length > 0 && (
+                        <Popover open={scenePopoverOpen} onOpenChange={setScenePopoverOpen}>
+                          <PopoverTrigger asChild>
+                            <button
+                              className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-foreground hover:bg-primary/10 hover:border-primary/40 transition-colors"
+                              title="Scene zuweisen"
+                            >
+                              <LayersIcon className="w-3 h-3" />
+                              {sceneLabel(currentSlide.sceneId)}
+                              <span className="text-muted-foreground">▾</span>
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-80 p-0" align="start">
+                            <div className="px-3 py-2 border-b border-border">
+                              <p className="text-xs font-medium text-foreground">
+                                Slide {currentSlide.slideNumber} zuordnen zu …
+                              </p>
+                            </div>
+                            <div className="max-h-64 overflow-y-auto p-1">
+                              {scenes.map((s, i) => {
+                                const sceneSlides = slidesByScene.get(s.id) ?? [];
+                                const isCurrent = currentSlide.sceneId === s.id;
+                                return (
+                                  <button
+                                    key={s.id}
+                                    onClick={() =>
+                                      assignScene.mutate({
+                                        slideId: currentSlide.id,
+                                        sceneId: s.id,
+                                      })
+                                    }
+                                    disabled={assignScene.isPending || isCurrent}
+                                    className={`w-full text-left rounded-md px-2 py-1.5 text-xs flex items-start gap-2 hover:bg-muted disabled:opacity-60 ${
+                                      isCurrent ? "bg-primary/10" : ""
+                                    }`}
+                                  >
+                                    <span className="mt-0.5 w-3 inline-flex justify-center">
+                                      {isCurrent ? (
+                                        <CheckIcon className="w-3 h-3 text-primary" />
+                                      ) : null}
+                                    </span>
+                                    <span className="flex-1 min-w-0">
+                                      <span className="font-medium text-foreground">
+                                        Scene {i + 1}
+                                      </span>
+                                      {s.environment && (
+                                        <span className="text-muted-foreground ml-2">
+                                          {s.environment}
+                                        </span>
+                                      )}
+                                    </span>
+                                    <span className="text-[11px] text-muted-foreground whitespace-nowrap">
+                                      {sceneSlides.length} slide{sceneSlides.length === 1 ? "" : "s"}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <div className="border-t border-border p-2 flex justify-end">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-xs h-7"
+                                onClick={() => setScenePopoverOpen(false)}
+                              >
+                                Schließen
+                              </Button>
+                            </div>
+                          </PopoverContent>
+                        </Popover>
+                      )}
+                      {currentSlide.charactersInSlide && currentSlide.charactersInSlide.length > 0 && (
+                        <>
+                          <span className="text-muted-foreground">·</span>
+                          <span className="text-muted-foreground">Chars:</span>
+                          {(currentSlide.charactersInSlide as string[]).map((name) => (
+                            <span
+                              key={name}
+                              className="inline-flex items-center rounded-full bg-primary/10 border border-primary/20 px-2 py-0.5 text-primary text-[11px]"
+                            >
+                              {name}
+                            </span>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  </div>
                   <div className="flex gap-2 flex-wrap">
                     {currentSlide.imageUrl && (
                       <a href={currentSlide.imageUrl} download={`slide-${currentSlide.slideNumber}.png`}>
@@ -387,6 +612,28 @@ export default function StoryDetail() {
                     </Button>
                   </div>
                 </div>
+
+                {/* Scene-reassignment regen hint */}
+                {recentlyMovedSlideIds.has(currentSlide.id) && (
+                  <div className="flex items-start gap-3 rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">
+                    <AlertTriangleIcon className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium">Scene geändert — Bild regenerieren um anzuwenden</p>
+                      <p className="text-yellow-200/70 mt-0.5">
+                        Der Image-Prompt wurde gegen die alte Scene geschrieben.
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      className="gap-1.5 text-xs h-7"
+                      onClick={() => regenerateSlide.mutate({ slideId: currentSlide.id })}
+                      disabled={regenerateSlide.isPending || !currentSlide.imagePrompt}
+                    >
+                      <RefreshCwIcon className={`w-3.5 h-3.5 ${regenerateSlide.isPending ? "animate-spin" : ""}`} />
+                      Regenerate slide
+                    </Button>
+                  </div>
+                )}
 
                 {/* Image display */}
                 <div className={`relative bg-muted rounded-xl overflow-hidden ${story.imageFormat === "4:5" ? "aspect-[4/5]" : "aspect-square"} max-w-sm mx-auto lg:mx-0`}>
@@ -455,66 +702,109 @@ export default function StoryDetail() {
             )}
           </div>
 
-          {/* Slide thumbnails */}
-          <div className="space-y-2">
+          {/* Slide thumbnails — grouped by scene */}
+          <div className="space-y-3">
             <h3 className="font-display text-sm font-semibold text-foreground">
               Alle Slides ({completedSlides}/{slides.length} fertig)
             </h3>
-            <div className="grid grid-cols-2 lg:grid-cols-1 gap-2 max-h-[600px] overflow-y-auto pr-1">
-              {slides.map((slide, i) => {
-                const slideStatus = STATUS_CONFIG[slide.status as keyof typeof STATUS_CONFIG] || STATUS_CONFIG.pending;
-                const StatusIcon = slideStatus.icon;
-                return (
-                  <div
-                    key={slide.id}
-                    className={`group relative rounded-lg overflow-hidden border-2 transition-all ${
-                      activeSlide === i ? "border-primary" : "border-border hover:border-primary/40"
-                    }`}
-                  >
-                    <button
-                      onClick={() => setActiveSlide(i)}
-                      className="w-full text-left"
-                    >
-                      <div className="flex items-center gap-2 p-2">
-                        <div className={`relative flex-shrink-0 ${story.imageFormat === "4:5" ? "w-10 h-12" : "w-10 h-10"} bg-muted rounded overflow-hidden`}>
-                          {slide.imageUrl ? (
-                            <img src={slide.imageUrl} alt={`Slide ${slide.slideNumber}`} className="w-full h-full object-cover" />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <StatusIcon className={`w-4 h-4 ${slide.status === "generating" ? "animate-spin" : ""} text-muted-foreground`} />
+            <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
+              {(() => {
+                // Build (sceneId | null, label, slides[]) groups in scene order, then "Ohne Scene".
+                const groups: Array<{ key: string; label: string; slides: Slide[] }> = [];
+                if (scenes.length === 0) {
+                  groups.push({ key: "_all", label: "Slides", slides });
+                } else {
+                  scenes.forEach((s, i) => {
+                    const list = (slidesByScene.get(s.id) ?? [])
+                      .slice()
+                      .sort((a, b) => a.slideNumber - b.slideNumber);
+                    groups.push({
+                      key: s.id,
+                      label: `Scene ${i + 1}${s.environment ? ` · ${s.environment}` : ""}`,
+                      slides: list,
+                    });
+                  });
+                  if (slidesWithoutScene.length > 0) {
+                    groups.push({
+                      key: "_orphan",
+                      label: "Ohne Scene",
+                      slides: slidesWithoutScene
+                        .slice()
+                        .sort((a, b) => a.slideNumber - b.slideNumber),
+                    });
+                  }
+                }
+                return groups.map((g) => (
+                  <div key={g.key} className="space-y-1.5">
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground px-1">
+                      {g.label}
+                    </p>
+                    {g.slides.length === 0 ? (
+                      <p className="text-xs text-muted-foreground px-1 italic">leer</p>
+                    ) : (
+                      <div className="grid grid-cols-2 lg:grid-cols-1 gap-2">
+                        {g.slides.map((slide) => {
+                          const i = slides.findIndex((s) => s.id === slide.id);
+                          const slideStatus =
+                            STATUS_CONFIG[slide.status as keyof typeof STATUS_CONFIG] ||
+                            STATUS_CONFIG.pending;
+                          const StatusIcon = slideStatus.icon;
+                          return (
+                            <div
+                              key={slide.id}
+                              className={`group relative rounded-lg overflow-hidden border-2 transition-all ${
+                                activeSlide === i ? "border-primary" : "border-border hover:border-primary/40"
+                              }`}
+                            >
+                              <button
+                                onClick={() => setActiveSlide(i)}
+                                className="w-full text-left"
+                              >
+                                <div className="flex items-center gap-2 p-2">
+                                  <div className={`relative flex-shrink-0 ${story.imageFormat === "4:5" ? "w-10 h-12" : "w-10 h-10"} bg-muted rounded overflow-hidden`}>
+                                    {slide.imageUrl ? (
+                                      <img src={slide.imageUrl} alt={`Slide ${slide.slideNumber}`} className="w-full h-full object-cover" />
+                                    ) : (
+                                      <div className="w-full h-full flex items-center justify-center">
+                                        <StatusIcon className={`w-4 h-4 ${slide.status === "generating" ? "animate-spin" : ""} text-muted-foreground`} />
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-xs font-medium text-foreground">Slide {slide.slideNumber}</p>
+                                    <span className={`text-xs px-1.5 py-0.5 rounded-full ${slideStatus.color}`}>
+                                      {slideStatus.label}
+                                    </span>
+                                  </div>
+                                </div>
+                              </button>
+                              {/* Reorder arrows */}
+                              <div className="absolute top-1 right-1 flex flex-col gap-0.5 opacity-40 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); handleMoveSlide(i, -1); }}
+                                  disabled={i === 0 || reorderSlides.isPending}
+                                  className="bg-card/90 hover:bg-primary/20 border border-border rounded p-0.5 disabled:opacity-30"
+                                  title="Nach oben"
+                                >
+                                  <ArrowUpIcon className="w-3 h-3" />
+                                </button>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); handleMoveSlide(i, 1); }}
+                                  disabled={i === slides.length - 1 || reorderSlides.isPending}
+                                  className="bg-card/90 hover:bg-primary/20 border border-border rounded p-0.5 disabled:opacity-30"
+                                  title="Nach unten"
+                                >
+                                  <ArrowDownIcon className="w-3 h-3" />
+                                </button>
+                              </div>
                             </div>
-                          )}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-medium text-foreground">Slide {slide.slideNumber}</p>
-                          <span className={`text-xs px-1.5 py-0.5 rounded-full ${slideStatus.color}`}>
-                            {slideStatus.label}
-                          </span>
-                        </div>
+                          );
+                        })}
                       </div>
-                    </button>
-                    {/* Reorder arrows */}
-                    <div className="absolute top-1 right-1 flex flex-col gap-0.5 opacity-40 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleMoveSlide(i, -1); }}
-                        disabled={i === 0 || reorderSlides.isPending}
-                        className="bg-card/90 hover:bg-primary/20 border border-border rounded p-0.5 disabled:opacity-30"
-                        title="Nach oben"
-                      >
-                        <ArrowUpIcon className="w-3 h-3" />
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleMoveSlide(i, 1); }}
-                        disabled={i === slides.length - 1 || reorderSlides.isPending}
-                        className="bg-card/90 hover:bg-primary/20 border border-border rounded p-0.5 disabled:opacity-30"
-                        title="Nach unten"
-                      >
-                        <ArrowDownIcon className="w-3 h-3" />
-                      </button>
-                    </div>
+                    )}
                   </div>
-                );
-              })}
+                ));
+              })()}
             </div>
           </div>
         </div>
@@ -526,7 +816,8 @@ export default function StoryDetail() {
           <DialogHeader>
             <DialogTitle className="font-display">Slide bearbeiten</DialogTitle>
             <DialogDescription>
-              Speichern aktualisiert nur den Text. Klick "Neu generieren" für ein neues Bild.
+              "Speichern" aktualisiert nur den Text. "Speichern & Regenerieren" speichert
+              und generiert das Bild direkt neu.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -554,16 +845,37 @@ export default function StoryDetail() {
                 className="bg-background/50"
               />
             </div>
-            <div className="flex gap-3 pt-2">
+            <div className="flex gap-2 pt-2 flex-wrap sm:flex-nowrap">
               <Button variant="outline" className="flex-1" onClick={() => setEditingSlideId(null)}>
                 Abbrechen
               </Button>
               <Button
+                variant="outline"
                 className="flex-1"
-                onClick={handleSaveSlide}
-                disabled={updateSlideContent.isPending}
+                onClick={() => handleSaveSlide(false)}
+                disabled={updateSlideContent.isPending || regenerateSlide.isPending}
               >
-                {updateSlideContent.isPending ? "Speichert…" : "Speichern"}
+                {updateSlideContent.isPending && !chainRegenAfterSave
+                  ? "Speichert…"
+                  : "Speichern"}
+              </Button>
+              <Button
+                className="flex-1 gap-1.5"
+                onClick={() => handleSaveSlide(true)}
+                disabled={updateSlideContent.isPending || regenerateSlide.isPending}
+              >
+                {(updateSlideContent.isPending && chainRegenAfterSave) ||
+                regenerateSlide.isPending ? (
+                  <>
+                    <LoaderIcon className="w-3.5 h-3.5 animate-spin" />
+                    Generiert…
+                  </>
+                ) : (
+                  <>
+                    <ZapIcon className="w-3.5 h-3.5" />
+                    Speichern &amp; Regenerieren
+                  </>
+                )}
               </Button>
             </div>
           </div>
