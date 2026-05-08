@@ -26,7 +26,7 @@ import {
   categorizeImage, extractVariantsFromSheet, reviewStatusFromResult,
   type CategorizeResult, type KnownCharacter,
 } from "./_core/visionCategorize";
-import { prepareImageForVision } from "./_core/imagePrep";
+import { prepareImageForVision, prepareImageForStorage } from "./_core/imagePrep";
 import sharp from "sharp";
 import type { AssetVariant } from "@shared/types";
 import {
@@ -85,7 +85,14 @@ const assetRouter = router({
       }).optional(),
     }))
     .mutation(async ({ input }) => {
-      const buffer = Buffer.from(input.imageData, "base64");
+      const rawBuffer = Buffer.from(input.imageData, "base64");
+      // Convert big PNG/WEBP/GIF uploads to JPEG before storage so downstream
+      // vision/embed pipelines don't blow Anthropic's 5MB limit. Hash AFTER
+      // conversion so dedup matches the bytes we actually store.
+      const stored = await prepareImageForStorage(rawBuffer, input.mimeType, input.fileName);
+      const buffer = stored.buffer;
+      const mimeType = stored.mediaType;
+      const fileName = stored.fileName;
       const contentHash = createHash("sha256").update(buffer).digest("hex");
 
       const existing = await getAssetByContentHash(contentHash);
@@ -103,8 +110,8 @@ const assetRouter = router({
       let visionResult: CategorizeResult | null = null;
       let characterId: number | null = null;
 
-      const tmpKey = `assets/${input.category ?? "uploads"}/${Date.now()}-${input.fileName}`;
-      const { url, key } = await storagePut(tmpKey, buffer, input.mimeType);
+      const tmpKey = `assets/${input.category ?? "uploads"}/${Date.now()}-${fileName}`;
+      const { url, key } = await storagePut(tmpKey, buffer, mimeType);
 
       if (input.autoCategorize) {
         try {
@@ -122,7 +129,7 @@ const assetRouter = router({
           if (presigned && presigned.startsWith("http")) {
             source = { type: "url" as const, url: presigned };
           } else {
-            const prepared = await prepareImageForVision(buffer, input.mimeType);
+            const prepared = await prepareImageForVision(buffer, mimeType);
             source = {
               type: "base64" as const,
               mediaType: prepared.mediaType,
@@ -169,7 +176,7 @@ const assetRouter = router({
                 ? { type: "url" as const, url: presigned }
                 : ({
                     type: "base64" as const,
-                    mediaType: input.mimeType,
+                    mediaType: mimeType,
                     data: buffer.toString("base64"),
                   } as const);
             const extracted = await extractVariantsFromSheet(variantSource, {
