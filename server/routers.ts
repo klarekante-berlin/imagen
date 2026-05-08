@@ -18,8 +18,9 @@ import {
   normalizeConsistencyContext,
   findSceneForSlide,
 } from "./storyService";
-import { planStory, writeStorySlides } from "./storyPlanner";
+import { planStory, rewriteSlideImagePrompt, writeStorySlides } from "./storyPlanner";
 import type { ConsistencyCharacterRef, ConsistencyContext, Scene, StoryPlan } from "@shared/types";
+import type { Slide, Story } from "../drizzle/schema";
 import {
   categorizeImage, reviewStatusFromResult,
   type CategorizeResult, type KnownCharacter,
@@ -935,54 +936,9 @@ const generateRouter = router({
 
       const ctx = normalizeConsistencyContext(story.consistencyContext);
       if (!ctx) throw new Error("Story has invalid consistency context");
-      const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
 
-       // Build character reference map with presigned absolute URLs for Atlas Cloud
-      const characterRefs = (ctx.characters || [])
-        .filter((char) => char.assetId && char.assetId > 0)
-        .map((char) => {
-          const asset = usedAssets.find((a) => a.id === char.assetId);
-          return { name: char.name, asset };
-        })
-        .filter((r) => r.asset?.imageUrl);
-      const presigned = await Promise.all(
-        characterRefs.map((r) => getPresignedStorageUrl(r.asset!.imageUrl!)),
-      );
-      const characterAssetMap = new Map<string, string>();
-      characterRefs.forEach((r, i) => {
-        if (presigned[i]) characterAssetMap.set(r.name.toLowerCase(), presigned[i]!);
-      });
-      const slideCharacters = (slide.charactersInSlide as string[] || []);
-      // Match generateAllImages: up to 3 char refs, smart-fill rest with styles in
-      // generateSlideImage. Atlas hard-cap is 4 total.
-      const charRefUrls = slideCharacters
-        .map((name) => characterAssetMap.get(name.toLowerCase()))
-        .filter((url): url is string => !!url)
-        .slice(0, 3);
-
-      // All stil-referenz assets minus user-excluded ones — generateSlideImage
-      // decides how many to actually pass.
-      const excludedStyleIds = new Set(ctx.excludedStyleRefAssetIds ?? []);
-      const styleRefAssets = usedAssets
-        .filter((a) => a.category === "stil-referenz")
-        .filter((a) => !excludedStyleIds.has(a.id));
-      const styleReferenceUrls = (
-        await Promise.all(styleRefAssets.map((a) => getPresignedStorageUrl(a.imageUrl ?? "")))
-      ).filter((u): u is string => !!u);
       await updateSlide(input.slideId, { status: "generating" });
-
-      let result: { imageKey: string; imageUrl: string };
-      if (story.imageProvider === "freepik") {
-        result = await generateSlideImageFreepik(
-          slide.imagePrompt, ctx, slide.slideNumber, slide.storyId, story.imageFormat
-        );
-      } else {
-        result = await generateSlideImage(
-          slide.imagePrompt, ctx, slide.slideNumber, slide.storyId, story.imageFormat,
-          charRefUrls, styleReferenceUrls, slideCharacters,
-        );
-      }
-
+      const result = await regenerateSlideImage(slide, story, ctx, slide.imagePrompt);
       await updateSlide(input.slideId, {
         imageKey: result.imageKey,
         imageUrl: result.imageUrl,
@@ -995,12 +951,129 @@ const generateRouter = router({
       return { imageUrl: result.imageUrl };
     }),
 
+  /**
+   * Two-step regenerate: first ask Claude to rewrite the slide's imagePrompt
+   * against the *current* scene + character context, persist it, then run
+   * the normal image generation. Use this after a scene reassign or scene-env
+   * edit when the existing imagePrompt no longer reflects reality.
+   * See design doc §5 future "Phase 3 #12".
+   */
+  regenerateWithFreshPrompt: publicProcedure
+    .input(z.object({ slideId: z.number().int().positive() }))
+    .mutation(async ({ input }) => {
+      const slide = await getSlideById(input.slideId);
+      if (!slide) throw new Error("Slide not found");
+
+      const story = await getStoryById(slide.storyId);
+      if (!story || !story.consistencyContext) throw new Error("Story not found");
+
+      const ctx = normalizeConsistencyContext(story.consistencyContext);
+      if (!ctx) throw new Error("Story has invalid consistency context");
+
+      const scene = slide.sceneId
+        ? ctx.scenes.find((s) => s.id === slide.sceneId) ?? null
+        : null;
+
+      const newImagePrompt = await rewriteSlideImagePrompt({
+        slide: {
+          slideNumber: slide.slideNumber,
+          textContent: slide.textContent ?? "",
+          caption: slide.caption ?? "",
+          charactersInSlide: (slide.charactersInSlide as string[]) ?? [],
+          sceneId: slide.sceneId ?? null,
+        },
+        scene,
+        characters: ctx.characters ?? [],
+        storyTheme: story.theme ?? "",
+        imageFormat: story.imageFormat,
+        model: story.model,
+      });
+
+      await updateSlide(input.slideId, { imagePrompt: newImagePrompt, status: "generating" });
+
+      // Re-fetch slide to use the freshly-saved prompt + propagate to image gen.
+      const refreshed = await getSlideById(input.slideId);
+      if (!refreshed) throw new Error("Slide vanished after prompt write");
+
+      const result = await regenerateSlideImage(refreshed, story, ctx, newImagePrompt);
+      await updateSlide(input.slideId, {
+        imageKey: result.imageKey,
+        imageUrl: result.imageUrl,
+        status: "complete",
+        errorMessage: null,
+        needsRegen: false,
+      });
+
+      return { success: true, newImagePrompt, imageUrl: result.imageUrl };
+    }),
+
   getSlides: publicProcedure
     .input(z.object({ storyId: z.number() }))
     .query(async ({ input }) => {
       return getSlidesByStoryId(input.storyId);
     }),
 });
+
+// ─── Single-slide image regen helper ──────────────────────────────────────────
+
+/**
+ * Resolve character + style refs and call the configured image provider for
+ * one slide. Shared by `regenerateSlide` and `regenerateWithFreshPrompt` —
+ * both diverge only in how `imagePrompt` is sourced. Caller is responsible
+ * for setting `status: "generating"` before and persisting the result after.
+ */
+async function regenerateSlideImage(
+  slide: Slide,
+  story: Story,
+  ctx: ConsistencyContext,
+  imagePrompt: string,
+): Promise<{ imageKey: string; imageUrl: string }> {
+  if (!imagePrompt) throw new Error("Slide has no image prompt");
+  const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
+
+  // Build character reference map with presigned absolute URLs for Atlas Cloud
+  const characterRefs = (ctx.characters || [])
+    .filter((char) => char.assetId && char.assetId > 0)
+    .map((char) => {
+      const asset = usedAssets.find((a) => a.id === char.assetId);
+      return { name: char.name, asset };
+    })
+    .filter((r) => r.asset?.imageUrl);
+  const presigned = await Promise.all(
+    characterRefs.map((r) => getPresignedStorageUrl(r.asset!.imageUrl!)),
+  );
+  const characterAssetMap = new Map<string, string>();
+  characterRefs.forEach((r, i) => {
+    if (presigned[i]) characterAssetMap.set(r.name.toLowerCase(), presigned[i]!);
+  });
+  const slideCharacters = (slide.charactersInSlide as string[]) || [];
+  // Match generateAllImages: up to 3 char refs, smart-fill rest with styles
+  // in generateSlideImage. Atlas hard-cap is 4 total.
+  const charRefUrls = slideCharacters
+    .map((name) => characterAssetMap.get(name.toLowerCase()))
+    .filter((url): url is string => !!url)
+    .slice(0, 3);
+
+  // All stil-referenz assets minus user-excluded ones — generateSlideImage
+  // decides how many to actually pass.
+  const excludedStyleIds = new Set(ctx.excludedStyleRefAssetIds ?? []);
+  const styleRefAssets = usedAssets
+    .filter((a) => a.category === "stil-referenz")
+    .filter((a) => !excludedStyleIds.has(a.id));
+  const styleReferenceUrls = (
+    await Promise.all(styleRefAssets.map((a) => getPresignedStorageUrl(a.imageUrl ?? "")))
+  ).filter((u): u is string => !!u);
+
+  if (story.imageProvider === "freepik") {
+    return generateSlideImageFreepik(
+      imagePrompt, ctx, slide.slideNumber, slide.storyId, story.imageFormat,
+    );
+  }
+  return generateSlideImage(
+    imagePrompt, ctx, slide.slideNumber, slide.storyId, story.imageFormat,
+    charRefUrls, styleReferenceUrls, slideCharacters,
+  );
+}
 
 // ─── App Router ───────────────────────────────────────────────────────────────
 
