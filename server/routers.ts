@@ -16,6 +16,7 @@ import {
   generateSlideImage, generateSlideImageFreepik,
   getPresignedStorageUrl,
   normalizeConsistencyContext,
+  findSceneForSlide,
 } from "./storyService";
 import { planStory, writeStorySlides } from "./storyPlanner";
 import type { ConsistencyCharacterRef, ConsistencyContext, Scene, StoryPlan } from "@shared/types";
@@ -294,6 +295,34 @@ const slidesRouter = router({
       return { success: true };
     }),
 
+  /**
+   * Reassign a slide to a different scene. Updates `slides.sceneId` only —
+   * does NOT regenerate the image or rewrite the prompt. Client shows a
+   * "Regenerate to apply" hint locally; user hits regenerate when ready.
+   * See design doc §3a / §5 (no auto-regen).
+   */
+  assignScene: publicProcedure
+    .input(z.object({
+      slideId: z.number().int().positive(),
+      sceneId: z.string().min(1),
+    }))
+    .mutation(async ({ input }) => {
+      const slide = await getSlideById(input.slideId);
+      if (!slide) throw new Error("Slide not found");
+
+      const story = await getStoryById(slide.storyId);
+      if (!story) throw new Error("Story not found");
+
+      const ctx = normalizeConsistencyContext(story.consistencyContext);
+      if (!ctx) throw new Error("Story has invalid consistency context");
+
+      const exists = ctx.scenes.some((s) => s.id === input.sceneId);
+      if (!exists) throw new Error(`Scene "${input.sceneId}" not found in this story`);
+
+      await updateSlide(input.slideId, { sceneId: input.sceneId });
+      return { success: true };
+    }),
+
   /** Reorder slides: array position (1-indexed) becomes the new slideNumber. */
   reorder: publicProcedure
     .input(z.object({ storyId: z.number(), slideIds: z.array(z.number()).min(1) }))
@@ -526,11 +555,16 @@ const storyRouter = router({
       await createSlides(storyId, plan.suggestedSlideCount);
 
       for (const slide of slides) {
+        // Compute sceneId at write time from the planner's slideRange so each
+        // slide row gets a stable per-slide scene FK. See design doc §3c.
+        const sceneId =
+          slide.sceneId ?? findSceneForSlide(consistencyContext, slide.slideNumber)?.id ?? null;
         await updateSlideByStoryAndNumber(storyId, slide.slideNumber, {
           textContent: slide.textContent,
           caption: slide.caption,
           charactersInSlide: slide.charactersInSlide,
           imagePrompt: slide.imagePrompt,
+          sceneId,
           status: "pending",
         });
       }
