@@ -42,6 +42,8 @@ import {
   TrashIcon,
   ArrowUpIcon,
   ArrowDownIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
   AlertTriangleIcon,
   LayersIcon,
   CheckIcon,
@@ -154,6 +156,13 @@ export default function StoryDetail() {
     onError: (err) => toast.error(`Fehler: ${err.message}`),
   });
 
+  const reorderScenes = trpc.stories.reorderScenes.useMutation({
+    onSuccess: () => {
+      utils.stories.get.invalidate({ id: storyId });
+    },
+    onError: (err) => toast.error(`Fehler: ${err.message}`),
+  });
+
   const removeScene = trpc.stories.removeScene.useMutation({
     onSuccess: () => {
       toast.success("Scene entfernt");
@@ -247,6 +256,14 @@ export default function StoryDetail() {
     setActiveSlide(target);
   };
 
+  const handleMoveScene = (idx: number, dir: -1 | 1, orderedIds: string[]) => {
+    const target = idx + dir;
+    if (target < 0 || target >= orderedIds.length) return;
+    const next = orderedIds.slice();
+    [next[idx], next[target]] = [next[target], next[idx]];
+    reorderScenes.mutate({ storyId, sceneIds: next });
+  };
+
   // Seed consistency context edit fields when dialog opens
   useEffect(() => {
     if (!ctxEditOpen || !story?.consistencyContext) return;
@@ -313,12 +330,11 @@ export default function StoryDetail() {
       }
     : null;
 
-  // Order scenes by their declared slideRange start; fallback to array index.
-  const scenes: SceneShape[] = (ctx?.scenes ?? []).slice().sort((a, b) => {
-    const aStart = a.slideRange?.[0] ?? 0;
-    const bStart = b.slideRange?.[0] ?? 0;
-    return aStart - bStart;
-  });
+  // Scenes are displayed in their stored order in consistencyContext.scenes;
+  // that order is the source of truth (mutated by stories.reorderScenes).
+  // Note: slideRange may be stale post-reorder — design doc §6 keeps that
+  // as advisory, not a sort key.
+  const scenes: SceneShape[] = (ctx?.scenes ?? []).slice();
   const sceneIndexById = new Map(scenes.map((s, i) => [s.id, i]));
   const sceneLabel = (sceneId: string | null | undefined): string => {
     if (!sceneId) return "Ohne Scene";
@@ -459,6 +475,22 @@ export default function StoryDetail() {
                                 ? "0 slides — leer"
                                 : `${numbers.length} slide${numbers.length > 1 ? "s" : ""} · ${numbers.join(", ")}`}
                             </span>
+                            <button
+                              onClick={() => handleMoveScene(i, -1, scenes.map((sc) => sc.id))}
+                              disabled={i === 0 || reorderScenes.isPending}
+                              className="p-1 rounded hover:bg-primary/10 text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+                              title="Scene nach oben"
+                            >
+                              <ChevronUpIcon className="w-3 h-3" />
+                            </button>
+                            <button
+                              onClick={() => handleMoveScene(i, 1, scenes.map((sc) => sc.id))}
+                              disabled={i === scenes.length - 1 || reorderScenes.isPending}
+                              className="p-1 rounded hover:bg-primary/10 text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+                              title="Scene nach unten"
+                            >
+                              <ChevronDownIcon className="w-3 h-3" />
+                            </button>
                             {isEmpty && (
                               <button
                                 onClick={() => setRemoveSceneId(s.id)}
