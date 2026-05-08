@@ -10,6 +10,7 @@ import { __testables as visionTestables } from "./_core/visionCategorize";
 import { augmentImagePromptWithComposition } from "./storyService";
 import { composeSlideAction } from "./storyPlanner";
 import type { ComposeSlideActionResult } from "./storyPlanner";
+import { cosine } from "./_core/voyage";
 
 // Stub the Anthropic SDK so `composeSlideAction` (the only test that hits it
 // with the real implementation) gets a deterministic tool_use response.
@@ -364,6 +365,37 @@ describe("augmentImagePromptWithComposition", () => {
     };
     const out = augmentImagePromptWithComposition("Just the base.", composition, ["Toni"], new Map());
     expect(out).toBe("Just the base.");
+  });
+});
+
+// ─── Voyage cosine ───────────────────────────────────────────────────────────
+
+describe("voyage.cosine", () => {
+  it("returns 1 for identical unit vectors", () => {
+    expect(cosine([1, 0, 0], [1, 0, 0])).toBeCloseTo(1, 10);
+  });
+
+  it("returns 0 for orthogonal vectors", () => {
+    expect(cosine([1, 0], [0, 1])).toBeCloseTo(0, 10);
+  });
+
+  it("returns -1 for opposite vectors", () => {
+    expect(cosine([1, 2, 3], [-1, -2, -3])).toBeCloseTo(-1, 10);
+  });
+
+  it("is scale-invariant", () => {
+    expect(cosine([1, 1, 1], [2, 2, 2])).toBeCloseTo(1, 10);
+  });
+
+  it("returns 0 on zero-norm input (no NaN)", () => {
+    expect(cosine([0, 0, 0], [1, 2, 3])).toBe(0);
+    expect(cosine([1, 2, 3], [0, 0, 0])).toBe(0);
+    expect(cosine([], [])).toBe(0);
+  });
+
+  it("uses min length when arrays differ in size", () => {
+    // Truncates [1,1,1,99] to [1,1,1] — score should match identical [1,1,1].
+    expect(cosine([1, 1, 1, 99], [1, 1, 1])).toBeCloseTo(1, 10);
   });
 });
 

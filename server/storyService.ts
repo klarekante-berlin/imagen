@@ -275,6 +275,7 @@ export async function generateSlideImage(
   characterReferenceUrls: string[] = [], // Character sheet URLs for this slide's characters
   styleReferenceUrls: string[] = [],     // Global style reference URLs
   slideCharacterNames: string[] = [],    // Names of characters appearing in this slide
+  inspirationReferenceUrls: string[] = [], // Branch B: Voyage-retrieved sheets
 ): Promise<{ imageKey: string; imageUrl: string }> {
 
   const scene = findSceneForSlide(consistencyContext, slideNumber);
@@ -345,13 +346,19 @@ export async function generateSlideImage(
     .filter(Boolean)
     .join(" ");
 
-  // Combine reference images. Atlas hard-caps at 4 total. Characters first
-  // (max 3 — most impactful for consistency), then fill remaining slots with
-  // style references. So 1 char + up to 3 style refs, or 3 chars + 1 style.
+  // Combine reference images. Atlas hard-caps at 4 total. Priority order:
+  //   1) characters (up to 3 — most impactful for consistency)
+  //   2) Branch B inspiration sheets (Voyage-retrieved)
+  //   3) one style ref (typography / render look)
+  // 4+ char slides drop both inspiration AND style — chars are non-substitutable.
   const charRefs = characterReferenceUrls.slice(0, 3);
-  const remainingSlots = Math.max(0, 4 - charRefs.length);
-  const styleRefs = styleReferenceUrls.slice(0, remainingSlots);
-  const allReferenceUrls = [...charRefs, ...styleRefs].filter(Boolean).slice(0, 4);
+  const slots: string[] = [...charRefs];
+  for (const u of inspirationReferenceUrls) {
+    if (slots.length >= 4) break;
+    if (u) slots.push(u);
+  }
+  if (slots.length < 4 && styleReferenceUrls[0]) slots.push(styleReferenceUrls[0]);
+  const allReferenceUrls = slots.filter(Boolean).slice(0, 4);
 
   // gpt-image-2 via Atlas Cloud supports 1024x1024 and 1024x1536
   const size = imageFormat === "1:1" ? "1024x1024" : "1024x1536";

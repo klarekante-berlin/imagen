@@ -159,6 +159,17 @@ export default function StoryDetail() {
     onError: (err) => toast.error(`Fehler: ${err.message}`),
   });
 
+  const updateSelectedVariants = trpc.slides.updateSelectedVariants.useMutation({
+    onSuccess: () => {
+      utils.stories.get.invalidate({ id: storyId });
+    },
+    onError: (err) => toast.error(`Fehler: ${err.message}`),
+  });
+
+  // Asset list — used to resolve inspiration assetIds to names + variants for
+  // the per-character chip popover. Cheap query, cached by tRPC.
+  const { data: allAssets } = trpc.assets.list.useQuery({});
+
   const updateScene = trpc.stories.updateScene.useMutation({
     onSuccess: () => {
       toast.success("Scene gespeichert");
@@ -697,17 +708,155 @@ export default function StoryDetail() {
                         <>
                           <span className="text-muted-foreground">·</span>
                           <span className="text-muted-foreground">Chars:</span>
-                          {(currentSlide.charactersInSlide as string[]).map((name) => (
-                            <span
-                              key={name}
-                              className="inline-flex items-center rounded-full bg-primary/10 border border-primary/20 px-2 py-0.5 text-primary text-[11px]"
-                            >
-                              {name}
-                            </span>
-                          ))}
+                          {(currentSlide.charactersInSlide as string[]).map((name) => {
+                            const sv =
+                              (currentSlide.selectedVariants as Record<string, string> | null) ?? {};
+                            const ca =
+                              (currentSlide.composedActivities as Record<string, string> | null) ??
+                              {};
+                            const variantName = sv[`character:${name}`] ?? "";
+                            const activity = ca[name] ?? "";
+
+                            // Resolve this character's available variants from
+                            // their primary asset (via consistencyContext.characters[].assetId).
+                            const charRef = (
+                              rawCtx?.characters as
+                                | Array<{ name: string; assetId?: number }>
+                                | undefined
+                            )?.find((c) => c.name?.toLowerCase() === name.toLowerCase());
+                            const charAsset = charRef?.assetId
+                              ? allAssets?.find((a) => a.id === charRef.assetId)
+                              : undefined;
+                            const variants = (charAsset?.variants ?? []) as Array<{
+                              name: string;
+                              description: string;
+                              axis: string;
+                            }>;
+
+                            const onPick = (vn: string) => {
+                              updateSelectedVariants.mutate({
+                                slideId: currentSlide.id,
+                                patch: { [`character:${name}`]: vn },
+                              });
+                            };
+
+                            return (
+                              <Popover key={name}>
+                                <PopoverTrigger asChild>
+                                  <button
+                                    className="inline-flex items-center gap-1 rounded-full bg-primary/10 border border-primary/20 px-2 py-0.5 text-primary text-[11px] hover:bg-primary/20 transition-colors max-w-[280px] truncate"
+                                    title={
+                                      activity
+                                        ? `${name} · ${variantName || "no variant"} · ${activity}`
+                                        : name
+                                    }
+                                  >
+                                    <span className="font-medium">{name}</span>
+                                    {variantName && (
+                                      <span className="text-muted-foreground">· {variantName}</span>
+                                    )}
+                                    {activity && (
+                                      <span className="text-muted-foreground italic truncate">
+                                        · {activity}
+                                      </span>
+                                    )}
+                                    <span className="text-muted-foreground">▾</span>
+                                  </button>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-80 p-0" align="start">
+                                  <div className="px-3 py-2 border-b border-border">
+                                    <p className="text-xs font-medium text-foreground">
+                                      {name} — Variant überschreiben
+                                    </p>
+                                    {activity && (
+                                      <p className="text-[11px] text-muted-foreground mt-0.5 italic">
+                                        {activity}
+                                      </p>
+                                    )}
+                                  </div>
+                                  <div className="max-h-64 overflow-y-auto p-1">
+                                    <button
+                                      onClick={() => onPick("")}
+                                      className={`w-full text-left rounded-md px-2 py-1.5 text-xs hover:bg-muted ${
+                                        variantName === "" ? "bg-primary/10" : ""
+                                      }`}
+                                    >
+                                      <span className="font-medium text-foreground">
+                                        — keine Variant —
+                                      </span>
+                                      <span className="text-muted-foreground ml-2">
+                                        full sheet
+                                      </span>
+                                    </button>
+                                    {variants.length === 0 && (
+                                      <p className="text-[11px] text-muted-foreground px-2 py-1.5 italic">
+                                        Keine Varianten auf diesem Sheet
+                                      </p>
+                                    )}
+                                    {variants.map((v) => {
+                                      const active = variantName === v.name;
+                                      return (
+                                        <button
+                                          key={v.name}
+                                          onClick={() => onPick(v.name)}
+                                          className={`w-full text-left rounded-md px-2 py-1.5 text-xs flex items-start gap-2 hover:bg-muted ${
+                                            active ? "bg-primary/10" : ""
+                                          }`}
+                                        >
+                                          <span className="mt-0.5 w-3 inline-flex justify-center">
+                                            {active ? (
+                                              <CheckIcon className="w-3 h-3 text-primary" />
+                                            ) : null}
+                                          </span>
+                                          <span className="flex-1 min-w-0">
+                                            <span className="font-medium text-foreground">
+                                              {v.name}
+                                            </span>
+                                            <span className="text-[11px] text-muted-foreground ml-1">
+                                              [{v.axis}]
+                                            </span>
+                                            <span className="block text-[11px] text-muted-foreground mt-0.5">
+                                              {v.description}
+                                            </span>
+                                          </span>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </PopoverContent>
+                              </Popover>
+                            );
+                          })}
                         </>
                       )}
                     </div>
+                    {/* Branch B: inspiration sheets retrieved by Voyage. Pure
+                        debug aid — clicking navigates to /library. */}
+                    {(() => {
+                      const ids = (currentSlide.inspirationAssetIds as number[] | null) ?? [];
+                      if (ids.length === 0 || !allAssets) return null;
+                      const hits = ids
+                        .map((id) => allAssets.find((a) => a.id === id))
+                        .filter((a): a is NonNullable<typeof a> => !!a);
+                      if (hits.length === 0) return null;
+                      return (
+                        <div className="flex items-center gap-2 flex-wrap text-[11px] mt-1">
+                          <span className="text-muted-foreground">Inspiration:</span>
+                          {hits.map((a) => (
+                            <button
+                              key={a.id}
+                              onClick={() => navigate("/library")}
+                              className="inline-flex items-center gap-1 rounded-full bg-muted border border-border px-2 py-0.5 text-foreground hover:bg-primary/10 hover:border-primary/40 transition-colors"
+                              title={a.visualDescription ?? a.name}
+                            >
+                              <span className="text-muted-foreground">◇</span>
+                              <span className="truncate max-w-[160px]">{a.name}</span>
+                              <span className="text-muted-foreground">↗</span>
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="flex gap-2 flex-wrap">
                     {currentSlide.imageUrl && (

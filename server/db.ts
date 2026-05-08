@@ -1,4 +1,4 @@
-import { eq, desc, and, inArray, gte, isNull } from "drizzle-orm";
+import { eq, desc, and, inArray, gte, isNull, isNotNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   assets, stories, slides, characters,
@@ -89,6 +89,17 @@ export async function getAssetsByIds(ids: number[]): Promise<Asset[]> {
   const db = await getDb();
   if (!db) return [];
   return db.select().from(assets).where(inArray(assets.id, ids));
+}
+
+/**
+ * Branch B retrieval: every asset whose sheet-level Voyage embedding has
+ * been persisted. Caller computes cosine in process — keeps the SQL trivial
+ * and avoids vector-column extensions.
+ */
+export async function getAssetsWithEmbedding(): Promise<Asset[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(assets).where(isNotNull(assets.embedding));
 }
 
 export async function updateAsset(id: number, data: Partial<InsertAsset>): Promise<void> {

@@ -10,17 +10,22 @@
  * Idempotent: by default skips assets where `variants` is already non-null.
  * Pass `--force` to re-extract.
  *
+ * Branch B: `--with-embeddings` additionally embeds the whole sheet via
+ * Voyage and persists `assets.embedding`. Requires VOYAGE_API_KEY.
+ *
  * Usage:
- *   pnpm backfill:variants --all-sheets               # every char-sheet/umgebung
- *   pnpm backfill:variants --asset-id=42              # one asset
- *   pnpm backfill:variants --all-sheets --dry-run     # report only, no DB write
- *   pnpm backfill:variants --all-sheets --force       # re-extract even if set
+ *   pnpm backfill:variants --all-sheets                       # every char-sheet/umgebung
+ *   pnpm backfill:variants --asset-id=42                      # one asset
+ *   pnpm backfill:variants --all-sheets --dry-run             # report only, no DB write
+ *   pnpm backfill:variants --all-sheets --force               # re-extract even if set
+ *   pnpm backfill:variants --all-sheets --with-embeddings     # also fill assets.embedding
  */
 
 import "dotenv/config";
 
 import { getAssetById, getAssets, updateAsset } from "../server/db";
 import { extractVariantsFromSheet } from "../server/_core/visionCategorize";
+import { embedSheet } from "../server/_core/voyage";
 import { getPresignedStorageUrl } from "../server/storyService";
 import { storageReadLocal } from "../server/storage";
 import type { Asset } from "../drizzle/schema";
@@ -30,14 +35,16 @@ interface CliArgs {
   allSheets: boolean;
   dryRun: boolean;
   force: boolean;
+  withEmbeddings: boolean;
 }
 
 function parseArgs(): CliArgs {
-  const args: CliArgs = { allSheets: false, dryRun: false, force: false };
+  const args: CliArgs = { allSheets: false, dryRun: false, force: false, withEmbeddings: false };
   for (const a of process.argv.slice(2)) {
     if (a === "--all-sheets") args.allSheets = true;
     else if (a === "--dry-run") args.dryRun = true;
     else if (a === "--force") args.force = true;
+    else if (a === "--with-embeddings") args.withEmbeddings = true;
     else if (a.startsWith("--asset-id=")) args.assetId = parseInt(a.slice("--asset-id=".length), 10);
   }
   return args;
@@ -87,17 +94,35 @@ async function processAsset(asset: Asset, args: CliArgs): Promise<"updated" | "s
     visualDescription: asset.visualDescription ?? "",
   });
 
+  // Optional Branch B: also embed the whole sheet for inspiration retrieval.
+  let embedding: number[] | null | undefined;
+  if (args.withEmbeddings) {
+    embedding = await embedSheet(source, variants, asset.visualDescription ?? "");
+    if (embedding) {
+      console.log(`[asset ${asset.id}] "${asset.name}" — embedded (${embedding.length}-dim)`);
+    } else {
+      console.warn(`[asset ${asset.id}] "${asset.name}" — embedSheet returned null`);
+    }
+  }
+
   if (variants.length === 0) {
     console.log(`[asset ${asset.id}] "${asset.name}" — no variants detected`);
     if (!args.dryRun && args.force) {
-      await updateAsset(asset.id, { variants: null });
+      const patch: Partial<Asset> = { variants: null };
+      if (args.withEmbeddings) patch.embedding = embedding ?? null;
+      await updateAsset(asset.id, patch);
+    } else if (!args.dryRun && args.withEmbeddings && embedding) {
+      // Variants empty but we still want to persist the embedding.
+      await updateAsset(asset.id, { embedding });
     }
     return "empty";
   }
 
   console.log(`[asset ${asset.id}] "${asset.name}" — ${variants.length} variants: ${variants.map((v) => v.name).join(", ")}`);
   if (!args.dryRun) {
-    await updateAsset(asset.id, { variants });
+    const patch: Partial<Asset> = { variants };
+    if (args.withEmbeddings) patch.embedding = embedding ?? null;
+    await updateAsset(asset.id, patch);
   }
   return "updated";
 }
@@ -105,6 +130,13 @@ async function processAsset(asset: Asset, args: CliArgs): Promise<"updated" | "s
 async function main() {
   const args = parseArgs();
   console.log(`[backfill-variants] flags: ${JSON.stringify(args)}`);
+
+  if (args.withEmbeddings && !process.env.VOYAGE_API_KEY) {
+    console.error(
+      "[backfill-variants] --with-embeddings requires VOYAGE_API_KEY in env",
+    );
+    process.exit(1);
+  }
 
   let candidates: Asset[];
   if (typeof args.assetId === "number" && Number.isFinite(args.assetId)) {

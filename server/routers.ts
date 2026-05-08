@@ -11,6 +11,7 @@ import {
   deleteSlide, markSlidesNeedingRegen,
   getCharacters, getCharacterById, getCharactersByIds, updateCharacter, resolveOrCreateCharacter,
 } from "./db";
+import { embedSheet, retrieveInspirationSheets } from "./_core/voyage";
 import { storagePut } from "./storage";
 import {
   generateSlideImage, generateSlideImageFreepik,
@@ -18,8 +19,12 @@ import {
   normalizeConsistencyContext,
   findSceneForSlide,
   deriveSceneSlideRanges,
+  augmentImagePromptWithComposition,
 } from "./storyService";
-import { planStory, rewriteSlideImagePrompt, writeStorySlides } from "./storyPlanner";
+import {
+  planStory, rewriteSlideImagePrompt, writeStorySlides,
+  composeSlideAction, type ComposeSlideActionResult,
+} from "./storyPlanner";
 import type { ConsistencyCharacterRef, ConsistencyContext, Scene, StoryPlan } from "@shared/types";
 import type { Slide, Story } from "../drizzle/schema";
 import {
@@ -161,6 +166,7 @@ const assetRouter = router({
       // Variant extraction: only meaningful for character sheets and
       // environment sheets. Best-effort — never blocks the upload.
       let variants: AssetVariant[] | null = null;
+      let embedding: number[] | null = null;
       const shouldExtractVariants =
         !!visionResult &&
         (visionResult.isCharacterSheet === true || category === "umgebungen");
@@ -187,6 +193,15 @@ const assetRouter = router({
               imageHeight,
             });
             variants = extracted.length > 0 ? extracted : null;
+
+            // Branch B: sheet-level Voyage embedding. Best-effort — embedSheet
+            // returns null when VOYAGE_API_KEY is unset OR the call fails.
+            // Slide-gen path falls back to no inspiration refs in that case.
+            embedding = await embedSheet(
+              variantSource,
+              variants ?? [],
+              visionResult.visualDescription,
+            );
           }
         } catch (e) {
           console.warn("[assets.upload] variant extraction failed:", e);
@@ -210,6 +225,7 @@ const assetRouter = router({
         mood: visionResult?.mood ?? null,
         dominantColors: visionResult?.dominantColors ?? null,
         variants,
+        embedding,
         contentHash,
         autoCategorized: !!visionResult,
         visionConfidence: visionResult?.categoryConfidence ?? null,
@@ -383,6 +399,37 @@ const slidesRouter = router({
       // Flip needsRegen so the slide shows the "regenerate to apply" strip —
       // its imagePrompt was written against the *old* scene's environment.
       await updateSlide(input.slideId, { sceneId: input.sceneId, needsRegen: true });
+      return { success: true };
+    }),
+
+  /**
+   * Merge user-overridden variant directives into `slides.selectedVariants`
+   * and flag `needsRegen=true`. The chip popover in StoryDetail calls this
+   * when the user picks a different variant for a character.
+   *
+   * Patch keys are scoped: "character:<name>" → variantName.
+   * Empty string clears the entry.
+   */
+  updateSelectedVariants: publicProcedure
+    .input(
+      z.object({
+        slideId: z.number().int().positive(),
+        patch: z.record(z.string(), z.string()),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const slide = await getSlideById(input.slideId);
+      if (!slide) throw new Error("Slide not found");
+      const current = (slide.selectedVariants as Record<string, string> | null) ?? {};
+      const merged: Record<string, string> = { ...current };
+      for (const [k, v] of Object.entries(input.patch)) {
+        if (v === "") delete merged[k];
+        else merged[k] = v;
+      }
+      await updateSlide(input.slideId, {
+        selectedVariants: Object.keys(merged).length > 0 ? merged : null,
+        needsRegen: true,
+      });
       return { success: true };
     }),
 
@@ -612,6 +659,163 @@ const storyRouter = router({
         consistencyContext.excludedStyleRefAssetIds = excludedStyleRefAssetIds;
       }
 
+      // Build characterName → variants[] map from the resolved character
+      // assets so the composer (and the inspiration-retrieval excludes list)
+      // can see them. Heads-up: legacy world-built chars without an asset row
+      // simply contribute no variants — that's fine.
+      const charAssetIds = resolvedCharacters
+        .map((c) => c.assetId)
+        .filter((id) => typeof id === "number" && id > 0);
+      const charAssets = await getAssetsByIds(charAssetIds);
+      const charactersWithVariants = resolvedCharacters.map((c) => {
+        const a = charAssets.find((x) => x.id === c.assetId);
+        return { name: c.name, variants: (a?.variants as AssetVariant[] | null) ?? [] };
+      });
+      const variantDescriptionByCharacter = new Map<string, Map<string, string>>();
+      for (const c of charactersWithVariants) {
+        const inner = new Map<string, string>();
+        for (const v of c.variants) inner.set(v.name, v.description);
+        variantDescriptionByCharacter.set(c.name, inner);
+      }
+
+      // Per-slide compose + Voyage inspiration retrieval. Concurrency 4 to
+      // keep latency bounded. Failures degrade gracefully: persist nulls and
+      // continue — image gen still works on the un-augmented prompt.
+      const COMPOSE_CONCURRENCY = 4;
+      type ComposedSlide = {
+        slideNumber: number;
+        sceneId: string | null;
+        augmentedImagePrompt: string;
+        selectedVariants: Record<string, string> | null;
+        composedActivities: Record<string, string> | null;
+        sceneActivityNotes: string | null;
+        inspirationAssetIds: number[];
+      };
+      const composedBySlideNumber = new Map<number, ComposedSlide>();
+      let composeCursor = 0;
+
+      async function composeWorker() {
+        while (composeCursor < slides.length) {
+          const idx = composeCursor++;
+          const slide = slides[idx];
+          const sceneId =
+            slide.sceneId ?? findSceneForSlide(consistencyContext, slide.slideNumber)?.id ?? null;
+          const scene = sceneId
+            ? consistencyContext.scenes.find((s) => s.id === sceneId) ?? null
+            : null;
+
+          // Sheets already used as char refs in this slide — skip them as
+          // inspiration so we don't waste an Atlas slot on a duplicate.
+          const slideCharNames = new Set(
+            (slide.charactersInSlide ?? []).map((n) => n.toLowerCase()),
+          );
+          const charAssetIdsInSlide = resolvedCharacters
+            .filter((c) => slideCharNames.has(c.name.toLowerCase()))
+            .map((c) => c.assetId)
+            .filter((id) => typeof id === "number" && id > 0);
+          const exclude = [...charAssetIdsInSlide];
+          if (scene?.environmentRefAssetId) exclude.push(scene.environmentRefAssetId);
+
+          const queryText = [
+            input.theme,
+            scene ? `scene: ${scene.environment} ${scene.environmentLockNotes ?? ""}`.trim() : null,
+            `action: ${slide.textContent}`,
+            `image: ${slide.imagePrompt}`,
+          ]
+            .filter(Boolean)
+            .join(" | ");
+
+          let inspirationHits: Awaited<ReturnType<typeof retrieveInspirationSheets>> = [];
+          try {
+            inspirationHits = await retrieveInspirationSheets(queryText, exclude, 2);
+          } catch (e) {
+            console.warn(
+              `[stories.generate] retrieveInspiration slide ${slide.slideNumber} failed:`,
+              e instanceof Error ? e.message : e,
+            );
+          }
+
+          let composition: ComposeSlideActionResult | null = null;
+          try {
+            composition = await composeSlideAction({
+              slide: {
+                slideNumber: slide.slideNumber,
+                textContent: slide.textContent,
+                imagePrompt: slide.imagePrompt,
+                charactersInSlide: slide.charactersInSlide,
+                sceneId,
+              },
+              scene,
+              storyTheme: input.theme,
+              charactersWithVariants,
+              inspirationSheets: inspirationHits.map((h) => ({
+                assetId: h.asset.id,
+                visualDescription: h.asset.visualDescription ?? h.asset.name,
+              })),
+              model: input.model,
+            });
+          } catch (e) {
+            console.warn(
+              `[stories.generate] composeSlideAction slide ${slide.slideNumber} failed:`,
+              e instanceof Error ? e.message : e,
+            );
+          }
+
+          let augmentedImagePrompt = slide.imagePrompt;
+          let selectedVariants: Record<string, string> | null = null;
+          let composedActivities: Record<string, string> | null = null;
+          let sceneActivityNotes: string | null = null;
+          if (composition) {
+            // Per-character variant descriptions for the augmenter.
+            const descsForSlide = new Map<string, string>();
+            for (const name of slide.charactersInSlide) {
+              const inner = variantDescriptionByCharacter.get(name);
+              const variantName = composition.variantsByCharacter[name];
+              const desc = inner && variantName ? inner.get(variantName) : undefined;
+              if (desc) descsForSlide.set(name, desc);
+            }
+            augmentedImagePrompt = augmentImagePromptWithComposition(
+              slide.imagePrompt,
+              composition,
+              slide.charactersInSlide,
+              descsForSlide,
+            );
+            // Persist composer outputs as character-scoped maps so the UI
+            // can render chips without re-parsing the prompt. Empty maps
+            // collapse to null to keep the column compact.
+            const sv: Record<string, string> = {};
+            for (const [name, vn] of Object.entries(composition.variantsByCharacter)) {
+              sv[`character:${name}`] = vn;
+            }
+            if (composition.sceneVariant && sceneId) sv[`scene:${sceneId}`] = composition.sceneVariant;
+            selectedVariants = Object.keys(sv).length > 0 ? sv : null;
+            composedActivities =
+              Object.keys(composition.activitiesByCharacter).length > 0
+                ? { ...composition.activitiesByCharacter }
+                : null;
+            sceneActivityNotes = composition.sceneActivityNotes ?? null;
+          }
+
+          composedBySlideNumber.set(slide.slideNumber, {
+            slideNumber: slide.slideNumber,
+            sceneId,
+            augmentedImagePrompt,
+            selectedVariants,
+            composedActivities,
+            sceneActivityNotes,
+            inspirationAssetIds: inspirationHits.map((h) => h.asset.id),
+          });
+
+          // Track inspiration assets in usedAssetIds so the slide-gen step
+          // can presign their URLs from the same loader.
+          for (const h of inspirationHits) usedAssetIds.push(h.asset.id);
+        }
+      }
+
+      await Promise.all(
+        Array.from({ length: Math.min(COMPOSE_CONCURRENCY, slides.length) }, () => composeWorker()),
+      );
+
       const storyId = await createStory({
         title: plan.title,
         theme: input.theme,
@@ -626,17 +830,23 @@ const storyRouter = router({
       await createSlides(storyId, plan.suggestedSlideCount);
 
       for (const slide of slides) {
-        // Compute sceneId at write time from the planner's slideRange so each
-        // slide row gets a stable per-slide scene FK. See design doc §3c.
+        const composed = composedBySlideNumber.get(slide.slideNumber);
         const sceneId =
-          slide.sceneId ?? findSceneForSlide(consistencyContext, slide.slideNumber)?.id ?? null;
+          composed?.sceneId ??
+          slide.sceneId ??
+          findSceneForSlide(consistencyContext, slide.slideNumber)?.id ??
+          null;
         await updateSlideByStoryAndNumber(storyId, slide.slideNumber, {
           textContent: slide.textContent,
           caption: slide.caption,
           charactersInSlide: slide.charactersInSlide,
-          imagePrompt: slide.imagePrompt,
+          imagePrompt: composed?.augmentedImagePrompt ?? slide.imagePrompt,
           sceneId,
           status: "pending",
+          selectedVariants: composed?.selectedVariants ?? null,
+          composedActivities: composed?.composedActivities ?? null,
+          sceneActivityNotes: composed?.sceneActivityNotes ?? null,
+          inspirationAssetIds: composed?.inspirationAssetIds ?? null,
         });
       }
 
@@ -880,8 +1090,16 @@ const generateRouter = router({
       const ctx = normalizeConsistencyContext(story.consistencyContext);
       if (!ctx) throw new Error("Story has invalid consistency context");
 
-      // Get all used assets with their image URLs for reference
-      const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
+      // Get all used assets with their image URLs for reference. Include
+      // any per-slide inspiration assets (Branch B) — they may not be in
+      // usedAssetIds for legacy stories.
+      const inspirationIdsAcrossSlides = storySlides.flatMap(
+        (s) => (s.inspirationAssetIds as number[] | null) ?? [],
+      );
+      const allAssetIds = Array.from(
+        new Set<number>([...(story.usedAssetIds || []), ...inspirationIdsAcrossSlides]),
+      );
+      const usedAssets = await getAssetsByIds(allAssetIds);
 
       // Resolve per-character ref assets. Full character sheets always go to
       // Atlas — no per-slide variant cropping. The composer LLM (storyPlanner)
@@ -947,6 +1165,18 @@ const generateRouter = router({
               .filter((url): url is string => !!url)
               .slice(0, 3);
 
+            // Branch B inspiration refs — presign sheets retrieved via Voyage
+            // at story-gen time (persisted on slide.inspirationAssetIds).
+            const inspirationIds = (slide.inspirationAssetIds as number[] | null) ?? [];
+            const inspirationAssets = inspirationIds
+              .map((id) => usedAssets.find((a) => a.id === id))
+              .filter((a): a is NonNullable<typeof a> => !!a);
+            const inspirationRefUrls = (
+              await Promise.all(
+                inspirationAssets.map((a) => getPresignedStorageUrl(a.imageUrl ?? "")),
+              )
+            ).filter((u): u is string => !!u);
+
             let result: { imageKey: string; imageUrl: string };
             if (storyRef.imageProvider === "freepik") {
               result = await generateSlideImageFreepik(
@@ -958,6 +1188,7 @@ const generateRouter = router({
                 charRefUrls,
                 styleReferenceUrls,
                 slideCharacters,
+                inspirationRefUrls,
               );
             }
 
@@ -1036,12 +1267,14 @@ const generateRouter = router({
         ? ctx.scenes.find((s) => s.id === slide.sceneId) ?? null
         : null;
 
+      const charactersInSlide = (slide.charactersInSlide as string[]) ?? [];
+
       const newImagePrompt = await rewriteSlideImagePrompt({
         slide: {
           slideNumber: slide.slideNumber,
           textContent: slide.textContent ?? "",
           caption: slide.caption ?? "",
-          charactersInSlide: (slide.charactersInSlide as string[]) ?? [],
+          charactersInSlide,
           sceneId: slide.sceneId ?? null,
         },
         scene,
@@ -1051,13 +1284,33 @@ const generateRouter = router({
         model: story.model,
       });
 
-      await updateSlide(input.slideId, { imagePrompt: newImagePrompt, status: "generating" });
+      // Re-run compose + retrieval against the fresh prompt so variant /
+      // activity / inspiration tracking stays aligned with the new wording.
+      const composed = await composeAndRetrieveForSlide({
+        slideNumber: slide.slideNumber,
+        textContent: slide.textContent ?? "",
+        imagePrompt: newImagePrompt,
+        charactersInSlide,
+        sceneId: slide.sceneId ?? null,
+        scene,
+        ctx,
+        story,
+      });
+
+      await updateSlide(input.slideId, {
+        imagePrompt: composed.augmentedImagePrompt,
+        selectedVariants: composed.selectedVariants,
+        composedActivities: composed.composedActivities,
+        sceneActivityNotes: composed.sceneActivityNotes,
+        inspirationAssetIds: composed.inspirationAssetIds,
+        status: "generating",
+      });
 
       // Re-fetch slide to use the freshly-saved prompt + propagate to image gen.
       const refreshed = await getSlideById(input.slideId);
       if (!refreshed) throw new Error("Slide vanished after prompt write");
 
-      const result = await regenerateSlideImage(refreshed, story, ctx, newImagePrompt);
+      const result = await regenerateSlideImage(refreshed, story, ctx, composed.augmentedImagePrompt);
       await updateSlide(input.slideId, {
         imageKey: result.imageKey,
         imageUrl: result.imageUrl,
@@ -1066,7 +1319,7 @@ const generateRouter = router({
         needsRegen: false,
       });
 
-      return { success: true, newImagePrompt, imageUrl: result.imageUrl };
+      return { success: true, newImagePrompt: composed.augmentedImagePrompt, imageUrl: result.imageUrl };
     }),
 
   getSlides: publicProcedure
@@ -1075,6 +1328,136 @@ const generateRouter = router({
       return getSlidesByStoryId(input.storyId);
     }),
 });
+
+// ─── Single-slide compose + retrieval helper ────────────────────────────────
+
+/**
+ * Per-slide composer + Voyage inspiration retrieval, factored out so both
+ * `stories.generate` (batch) and `regenerateWithFreshPrompt` (single) use
+ * identical logic. Failures degrade to no-op (returns the un-augmented
+ * prompt + nulls).
+ */
+async function composeAndRetrieveForSlide(args: {
+  slideNumber: number;
+  textContent: string;
+  imagePrompt: string;
+  charactersInSlide: string[];
+  sceneId: string | null;
+  scene: Scene | null;
+  ctx: ConsistencyContext;
+  story: Story;
+}): Promise<{
+  augmentedImagePrompt: string;
+  selectedVariants: Record<string, string> | null;
+  composedActivities: Record<string, string> | null;
+  sceneActivityNotes: string | null;
+  inspirationAssetIds: number[];
+}> {
+  const { slideNumber, textContent, imagePrompt, charactersInSlide, sceneId, scene, ctx, story } = args;
+
+  // Pull characters' assets (for variants).
+  const charAssetIds = (ctx.characters || [])
+    .map((c) => c.assetId)
+    .filter((id) => typeof id === "number" && id > 0);
+  const charAssets = await getAssetsByIds(charAssetIds);
+  const charactersWithVariants = (ctx.characters || []).map((c) => {
+    const a = charAssets.find((x) => x.id === c.assetId);
+    return { name: c.name, variants: (a?.variants as AssetVariant[] | null) ?? [] };
+  });
+  const variantDescriptionByCharacter = new Map<string, Map<string, string>>();
+  for (const c of charactersWithVariants) {
+    const inner = new Map<string, string>();
+    for (const v of c.variants) inner.set(v.name, v.description);
+    variantDescriptionByCharacter.set(c.name, inner);
+  }
+
+  // Exclude char + scene assets from inspiration retrieval.
+  const slideCharNames = new Set(charactersInSlide.map((n) => n.toLowerCase()));
+  const charAssetIdsInSlide = (ctx.characters || [])
+    .filter((c) => slideCharNames.has(c.name.toLowerCase()))
+    .map((c) => c.assetId)
+    .filter((id) => typeof id === "number" && id > 0);
+  const exclude = [...charAssetIdsInSlide];
+  if (scene?.environmentRefAssetId) exclude.push(scene.environmentRefAssetId);
+
+  const queryText = [
+    story.theme ?? "",
+    scene ? `scene: ${scene.environment} ${scene.environmentLockNotes ?? ""}`.trim() : null,
+    `action: ${textContent}`,
+    `image: ${imagePrompt}`,
+  ]
+    .filter(Boolean)
+    .join(" | ");
+
+  let inspirationHits: Awaited<ReturnType<typeof retrieveInspirationSheets>> = [];
+  try {
+    inspirationHits = await retrieveInspirationSheets(queryText, exclude, 2);
+  } catch (e) {
+    console.warn(
+      `[regenerateWithFreshPrompt] retrieveInspiration slide ${slideNumber} failed:`,
+      e instanceof Error ? e.message : e,
+    );
+  }
+
+  let composition: ComposeSlideActionResult | null = null;
+  try {
+    composition = await composeSlideAction({
+      slide: { slideNumber, textContent, imagePrompt, charactersInSlide, sceneId },
+      scene,
+      storyTheme: story.theme ?? "",
+      charactersWithVariants,
+      inspirationSheets: inspirationHits.map((h) => ({
+        assetId: h.asset.id,
+        visualDescription: h.asset.visualDescription ?? h.asset.name,
+      })),
+      model: story.model,
+    });
+  } catch (e) {
+    console.warn(
+      `[regenerateWithFreshPrompt] composeSlideAction slide ${slideNumber} failed:`,
+      e instanceof Error ? e.message : e,
+    );
+  }
+
+  let augmentedImagePrompt = imagePrompt;
+  let selectedVariants: Record<string, string> | null = null;
+  let composedActivities: Record<string, string> | null = null;
+  let sceneActivityNotes: string | null = null;
+  if (composition) {
+    const descsForSlide = new Map<string, string>();
+    for (const name of charactersInSlide) {
+      const inner = variantDescriptionByCharacter.get(name);
+      const variantName = composition.variantsByCharacter[name];
+      const desc = inner && variantName ? inner.get(variantName) : undefined;
+      if (desc) descsForSlide.set(name, desc);
+    }
+    augmentedImagePrompt = augmentImagePromptWithComposition(
+      imagePrompt,
+      composition,
+      charactersInSlide,
+      descsForSlide,
+    );
+    const sv: Record<string, string> = {};
+    for (const [name, vn] of Object.entries(composition.variantsByCharacter)) {
+      sv[`character:${name}`] = vn;
+    }
+    if (composition.sceneVariant && sceneId) sv[`scene:${sceneId}`] = composition.sceneVariant;
+    selectedVariants = Object.keys(sv).length > 0 ? sv : null;
+    composedActivities =
+      Object.keys(composition.activitiesByCharacter).length > 0
+        ? { ...composition.activitiesByCharacter }
+        : null;
+    sceneActivityNotes = composition.sceneActivityNotes ?? null;
+  }
+
+  return {
+    augmentedImagePrompt,
+    selectedVariants,
+    composedActivities,
+    sceneActivityNotes,
+    inspirationAssetIds: inspirationHits.map((h) => h.asset.id),
+  };
+}
 
 // ─── Single-slide image regen helper ──────────────────────────────────────────
 
@@ -1091,7 +1474,11 @@ async function regenerateSlideImage(
   imagePrompt: string,
 ): Promise<{ imageKey: string; imageUrl: string }> {
   if (!imagePrompt) throw new Error("Slide has no image prompt");
-  const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
+  // Pull inspiration assets too — they may not be in usedAssetIds for legacy
+  // pre-Branch-B stories, so fetch by id directly.
+  const inspirationIds = (slide.inspirationAssetIds as number[] | null) ?? [];
+  const baseIds = story.usedAssetIds || [];
+  const usedAssets = await getAssetsByIds(Array.from(new Set([...baseIds, ...inspirationIds])));
 
   // Build character reference map with presigned absolute URLs for Atlas
   // Cloud. Full sheets always — variant selection is baked into `imagePrompt`
@@ -1118,6 +1505,14 @@ async function regenerateSlideImage(
     .filter((url): url is string => !!url)
     .slice(0, 3);
 
+  // Branch B inspiration refs: presign assets stored on slide.inspirationAssetIds.
+  const inspirationAssets = inspirationIds
+    .map((id) => usedAssets.find((a) => a.id === id))
+    .filter((a): a is NonNullable<typeof a> => !!a);
+  const inspirationReferenceUrls = (
+    await Promise.all(inspirationAssets.map((a) => getPresignedStorageUrl(a.imageUrl ?? "")))
+  ).filter((u): u is string => !!u);
+
   // All stil-referenz assets minus user-excluded ones — generateSlideImage
   // decides how many to actually pass.
   const excludedStyleIds = new Set(ctx.excludedStyleRefAssetIds ?? []);
@@ -1135,7 +1530,7 @@ async function regenerateSlideImage(
   }
   return generateSlideImage(
     imagePrompt, ctx, slide.slideNumber, slide.storyId, story.imageFormat,
-    charRefUrls, styleReferenceUrls, slideCharacters,
+    charRefUrls, styleReferenceUrls, slideCharacters, inspirationReferenceUrls,
   );
 }
 

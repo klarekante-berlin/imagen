@@ -97,6 +97,13 @@ export const assets = mysqlTable(
      * otherwise. Selector branches read this to crop the right panel per slide.
      */
     variants: json("variants").$type<AssetVariant[]>(),
+    /**
+     * Sheet-level Voyage multimodal embedding (1024-dim). Populated at upload
+     * (or via `backfill:variants --with-embeddings`) when VOYAGE_API_KEY is
+     * configured. Branch B reads this to retrieve inspiration sheets per slide.
+     * null when Voyage is unconfigured or the embed call failed.
+     */
+    embedding: json("embedding").$type<number[]>(),
     /** sha256 — dedup + idempotency */
     contentHash: varchar("contentHash", { length: 64 }),
     /** Original ingest path (e.g. klarekante-style/papa/foo.png) */
@@ -202,10 +209,25 @@ export const slides = mysqlTable(
      * Per-slide selected variant per ref slot. Keys are scoped:
      *   "character:<name>" → variant name on the character's primary asset
      *   "scene:<sceneId>"  → variant name on the scene's environment asset
-     * Populated by the selector (Branch A/B) before image-gen so the cropper
-     * knows which panel to feed Atlas. Null = use the full sheet (legacy).
+     * Populated by the composer (Branch A/B) before image-gen. Post-redesign
+     * the values are prompt directives, not crop keys (gpt-image-2 picks the
+     * variant from the augmented `imagePrompt`).
      */
     selectedVariants: json("selectedVariants").$type<Record<string, string>>(),
+    /**
+     * Composer output: characterName → 1-sentence German activity description.
+     * Persisted alongside the augmented `imagePrompt` so the UI can render a
+     * per-character chip (variant + activity) without re-parsing the prompt.
+     */
+    composedActivities: json("composedActivities").$type<Record<string, string>>(),
+    /** Composer output: optional 1-sentence scene mood/lighting note. */
+    sceneActivityNotes: text("sceneActivityNotes"),
+    /**
+     * Branch B: asset IDs returned by `retrieveInspirationSheets` for this
+     * slide. The image-gen step looks these up to fill remaining Atlas ref
+     * slots after character sheets. Persisted so regen reuses the same set.
+     */
+    inspirationAssetIds: json("inspirationAssetIds").$type<number[]>(),
     errorMessage: text("errorMessage"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

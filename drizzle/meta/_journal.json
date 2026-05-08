@@ -78,6 +78,13 @@
       "when": 1778228704455,
       "tag": "0010_fancy_goblin_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "5",
+      "when": 1778236881106,
+      "tag": "0011_stormy_marvex",
+      "breakpoints": true
     }
   ]
 }
