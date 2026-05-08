@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import sharp from "sharp";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
+import { prepareCroppedRefForAtlas } from "./_core/imagePrep";
+import { __testables as visionTestables } from "./_core/visionCategorize";
 
 // Mock DB helpers
 vi.mock("./db", () => ({
@@ -30,18 +33,28 @@ vi.mock("./db", () => ({
   updateSlideByStoryAndNumber: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("./_core/visionCategorize", () => ({
-  categorizeImage: vi.fn().mockResolvedValue({
-    suggestedCategory: "sonstiges",
-    categoryConfidence: 50,
-    suggestedCharacter: { matchType: "none", confidence: 50 },
-    isCharacterSheet: false,
-    visualDescription: "test",
-    tags: [],
-    needsHumanReview: true,
-  }),
-  reviewStatusFromResult: vi.fn().mockReturnValue("needs_review"),
-}));
+vi.mock("./_core/visionCategorize", async () => {
+  // Import the real module to keep `__testables` (pure validation) intact for
+  // the variant tests below. The router test path replaces `categorizeImage`
+  // and `extractVariantsFromSheet` with stubs.
+  const real = await vi.importActual<typeof import("./_core/visionCategorize")>(
+    "./_core/visionCategorize",
+  );
+  return {
+    ...real,
+    categorizeImage: vi.fn().mockResolvedValue({
+      suggestedCategory: "sonstiges",
+      categoryConfidence: 50,
+      suggestedCharacter: { matchType: "none", confidence: 50 },
+      isCharacterSheet: false,
+      visualDescription: "test",
+      tags: [],
+      needsHumanReview: true,
+    }),
+    extractVariantsFromSheet: vi.fn().mockResolvedValue([]),
+    reviewStatusFromResult: vi.fn().mockReturnValue("needs_review"),
+  };
+});
 
 vi.mock("./storyPlanner", () => ({
   planStory: vi.fn().mockResolvedValue({
@@ -79,7 +92,10 @@ vi.mock("./storyService", () => ({
   generateSlideImage: vi.fn().mockResolvedValue({ imageKey: "test/key.png", imageUrl: "/manus-storage/test/key.png" }),
   generateSlideImageFreepik: vi.fn().mockResolvedValue({ imageKey: "test/key.png", imageUrl: "/manus-storage/test/key.png" }),
   getPresignedStorageUrl: vi.fn().mockResolvedValue(null),
+  getVariantPresignedUrl: vi.fn().mockResolvedValue(null),
   normalizeConsistencyContext: vi.fn().mockImplementation((raw: unknown) => raw),
+  findSceneForSlide: vi.fn().mockReturnValue(null),
+  deriveSceneSlideRanges: vi.fn().mockImplementation((scenes: unknown) => scenes),
 }));
 
 vi.mock("./storage", () => ({
@@ -163,6 +179,91 @@ describe("stories router", () => {
     });
     expect(result.storyId).toBe(1);
     expect(result.title).toBe("Test");
+  });
+});
+
+// ─── Variants infrastructure ──────────────────────────────────────────────────
+
+describe("prepareCroppedRefForAtlas", () => {
+  it("crops a region and returns a JPEG with the expected dimensions", async () => {
+    // 200x100 white PNG.
+    const sourcePng = await sharp({
+      create: { width: 200, height: 100, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .png()
+      .toBuffer();
+
+    const out = await prepareCroppedRefForAtlas(sourcePng, "image/png", [50, 25, 100, 50]);
+    expect(out.mediaType).toBe("image/jpeg");
+    expect(out.buffer.length).toBeGreaterThan(0);
+
+    const meta = await sharp(out.buffer).metadata();
+    expect(meta.format).toBe("jpeg");
+    expect(meta.width).toBe(100);
+    expect(meta.height).toBe(50);
+  });
+
+  it("rejects an out-of-bounds bbox", async () => {
+    const sourcePng = await sharp({
+      create: { width: 50, height: 50, channels: 3, background: { r: 0, g: 0, b: 0 } },
+    })
+      .png()
+      .toBuffer();
+    await expect(
+      prepareCroppedRefForAtlas(sourcePng, "image/png", [0, 0, 200, 200]),
+    ).rejects.toThrow(/exceeds source/);
+  });
+
+  it("rejects a zero-area bbox", async () => {
+    const sourcePng = await sharp({
+      create: { width: 50, height: 50, channels: 3, background: { r: 0, g: 0, b: 0 } },
+    })
+      .png()
+      .toBuffer();
+    await expect(
+      prepareCroppedRefForAtlas(sourcePng, "image/png", [10, 10, 0, 10]),
+    ).rejects.toThrow(/invalid bbox/);
+  });
+});
+
+describe("extractVariantsFromSheet validation", () => {
+  it("normaliseVariant accepts a well-formed entry", () => {
+    const v = visionTestables.normaliseVariant(
+      { name: "cooking-apron", axis: "outfit", bbox: [0, 0, 100, 100], description: "Schürze" },
+      500,
+      500,
+    );
+    expect(v).not.toBeNull();
+    expect(v?.name).toBe("cooking-apron");
+    expect(v?.bbox).toEqual([0, 0, 100, 100]);
+  });
+
+  it("normaliseVariant rejects out-of-bounds bbox", () => {
+    const v = visionTestables.normaliseVariant(
+      { name: "x", axis: "outfit", bbox: [0, 0, 600, 100], description: "d" },
+      500,
+      500,
+    );
+    expect(v).toBeNull();
+  });
+
+  it("normaliseVariant rejects unknown axis", () => {
+    const v = visionTestables.normaliseVariant(
+      { name: "x", axis: "weather", bbox: [0, 0, 10, 10], description: "d" },
+      500,
+      500,
+    );
+    expect(v).toBeNull();
+  });
+
+  it("dedupeVariantNames suffixes collisions in order", () => {
+    const out = visionTestables.dedupeVariantNames([
+      { name: "outfit", axis: "outfit", bbox: [0, 0, 1, 1], description: "a" },
+      { name: "outfit", axis: "outfit", bbox: [0, 0, 1, 1], description: "b" },
+      { name: "other", axis: "outfit", bbox: [0, 0, 1, 1], description: "c" },
+      { name: "outfit", axis: "outfit", bbox: [0, 0, 1, 1], description: "d" },
+    ]);
+    expect(out.map((v) => v.name)).toEqual(["outfit", "outfit-2", "other", "outfit-3"]);
   });
 });
 

@@ -12,7 +12,8 @@
     "test": "vitest run",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "import:assets": "tsx scripts/import-klarekante-style.ts",
-    "backfill:slide-scene-ids": "tsx scripts/backfill-slide-scene-id.ts"
+    "backfill:slide-scene-ids": "tsx scripts/backfill-slide-scene-id.ts",
+    "backfill:variants": "tsx scripts/backfill-asset-variants.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.94.0",

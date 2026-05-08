@@ -10,6 +10,7 @@ import {
   varchar,
   json,
 } from "drizzle-orm/mysql-core";
+import type { AssetVariant } from "../shared/types";
 
 // ─── Asset / Character Library ───────────────────────────────────────────────
 
@@ -89,6 +90,13 @@ export const assets = mysqlTable(
     setting: varchar("setting", { length: 255 }),
     mood: varchar("mood", { length: 64 }),
     dominantColors: json("dominantColors").$type<string[]>(),
+    /**
+     * Vision-extracted variant panels (character outfits, age stages, env
+     * moments, etc.). Populated when the upload is detected as a variant
+     * sheet (`isCharacterSheet=true` or `category='umgebungen'`); null
+     * otherwise. Selector branches read this to crop the right panel per slide.
+     */
+    variants: json("variants").$type<AssetVariant[]>(),
     /** sha256 — dedup + idempotency */
     contentHash: varchar("contentHash", { length: 64 }),
     /** Original ingest path (e.g. klarekante-style/papa/foo.png) */
@@ -190,6 +198,14 @@ export const slides = mysqlTable(
      * `regenerateSlide`. Drives the "Regenerate to apply" hint in the UI.
      */
     needsRegen: boolean("needsRegen").notNull().default(false),
+    /**
+     * Per-slide selected variant per ref slot. Keys are scoped:
+     *   "character:<name>" → variant name on the character's primary asset
+     *   "scene:<sceneId>"  → variant name on the scene's environment asset
+     * Populated by the selector (Branch A/B) before image-gen so the cropper
+     * knows which panel to feed Atlas. Null = use the full sheet (legacy).
+     */
+    selectedVariants: json("selectedVariants").$type<Record<string, string>>(),
     errorMessage: text("errorMessage"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
