@@ -19,7 +19,13 @@ import {
   findSceneForSlide,
   deriveSceneSlideRanges,
 } from "./storyService";
-import { planStory, rewriteSlideImagePrompt, writeStorySlides } from "./storyPlanner";
+import {
+  planStory,
+  rewriteSlideImagePrompt,
+  selectVariantsForSlideViaVoyage,
+  writeStorySlides,
+  type SelectVariantsInput,
+} from "./storyPlanner";
 import type { ConsistencyCharacterRef, ConsistencyContext, Scene, StoryPlan } from "@shared/types";
 import type { Slide, Story } from "../drizzle/schema";
 import {
@@ -379,6 +385,34 @@ const slidesRouter = router({
       return { success: true };
     }),
 
+  /**
+   * Manual override of selector picks. Merges into the existing
+   * `selectedVariants` JSON, then flips `needsRegen=true` so the UI nudges
+   * regen. Empty-string value removes a key (UI uses this to "fall back to
+   * full sheet" for one character).
+   */
+  updateSelectedVariants: publicProcedure
+    .input(z.object({
+      slideId: z.number().int().positive(),
+      selectedVariants: z.record(z.string(), z.string()),
+    }))
+    .mutation(async ({ input }) => {
+      const slide = await getSlideById(input.slideId);
+      if (!slide) throw new Error("Slide not found");
+      const existing = (slide.selectedVariants as Record<string, string> | null) ?? {};
+      const merged: Record<string, string> = { ...existing };
+      for (const [k, v] of Object.entries(input.selectedVariants)) {
+        if (v === "") delete merged[k];
+        else merged[k] = v;
+      }
+      const next = Object.keys(merged).length > 0 ? merged : null;
+      await updateSlide(input.slideId, {
+        selectedVariants: next,
+        needsRegen: true,
+      });
+      return { success: true };
+    }),
+
   /** Reorder slides: array position (1-indexed) becomes the new slideNumber. */
   reorder: publicProcedure
     .input(z.object({ storyId: z.number(), slideIds: z.array(z.number()).min(1) }))
@@ -618,17 +652,88 @@ const storyRouter = router({
 
       await createSlides(storyId, plan.suggestedSlideCount);
 
+      // Pre-load char/scene variants once so the per-slide selector is cheap.
+      const charAssetIds = resolvedCharacters
+        .map((c) => c.assetId)
+        .filter((id): id is number => typeof id === "number" && id > 0);
+      const charAssets = charAssetIds.length > 0 ? await getAssetsByIds(charAssetIds) : [];
+      const charactersWithVariants = resolvedCharacters
+        .map((c) => {
+          const a = charAssets.find((x) => x.id === c.assetId);
+          const variants = (a?.variants as AssetVariant[] | null) ?? [];
+          return { name: c.name, variants };
+        })
+        .filter((c) => c.variants.length > 0);
+
+      // Map sceneId → variants[] for scene-env asset (Phase-3 worldBuilt).
+      const sceneVariantMap = new Map<string, AssetVariant[]>();
+      const sceneAssetIds = consistencyContext.scenes
+        .map((s) => s.environmentRefAssetId)
+        .filter((id): id is number => typeof id === "number" && id > 0);
+      const sceneAssets = sceneAssetIds.length > 0 ? await getAssetsByIds(sceneAssetIds) : [];
+      for (const s of consistencyContext.scenes) {
+        if (!s.environmentRefAssetId) continue;
+        const a = sceneAssets.find((x) => x.id === s.environmentRefAssetId);
+        const variants = (a?.variants as AssetVariant[] | null) ?? [];
+        if (variants.length > 0) sceneVariantMap.set(s.id, variants);
+      }
+
       for (const slide of slides) {
         // Compute sceneId at write time from the planner's slideRange so each
         // slide row gets a stable per-slide scene FK. See design doc §3c.
         const sceneId =
           slide.sceneId ?? findSceneForSlide(consistencyContext, slide.slideNumber)?.id ?? null;
+        const sceneObj = sceneId
+          ? consistencyContext.scenes.find((s) => s.id === sceneId) ?? null
+          : null;
+
+        // Branch B: Voyage RAG variant selector. Failure (e.g. missing API
+        // key, network) persists as `selectedVariants: null` → downstream
+        // falls back to full sheet for every ref.
+        let selectedVariants: Record<string, string> | null = null;
+        if (charactersWithVariants.length > 0 || sceneVariantMap.size > 0) {
+          try {
+            const result = await selectVariantsForSlideViaVoyage({
+              slide: {
+                slideNumber: slide.slideNumber,
+                textContent: slide.textContent,
+                imagePrompt: slide.imagePrompt,
+                charactersInSlide: slide.charactersInSlide,
+                sceneId,
+              },
+              scene: sceneObj,
+              storyTheme: input.theme,
+              charactersWithVariants,
+              sceneVariants: sceneId ? sceneVariantMap.get(sceneId) : undefined,
+            });
+            const merged: Record<string, string> = {};
+            for (const [name, variant] of Object.entries(result.variantsByCharacter)) {
+              merged[`character:${name}`] = variant;
+            }
+            if (result.sceneVariant && sceneId) {
+              merged[`scene:${sceneId}`] = result.sceneVariant;
+            }
+            if (Object.keys(merged).length > 0) {
+              selectedVariants = merged;
+              console.log(
+                `[stories.generate] slide ${slide.slideNumber} variants: ${JSON.stringify(merged)} scores=${JSON.stringify(result.scores)}`,
+              );
+            }
+          } catch (e) {
+            console.warn(
+              `[stories.generate] slide ${slide.slideNumber}: Voyage selector failed:`,
+              e,
+            );
+          }
+        }
+
         await updateSlideByStoryAndNumber(storyId, slide.slideNumber, {
           textContent: slide.textContent,
           caption: slide.caption,
           charactersInSlide: slide.charactersInSlide,
           imagePrompt: slide.imagePrompt,
           sceneId,
+          selectedVariants,
           status: "pending",
         });
       }
@@ -1048,7 +1153,65 @@ const generateRouter = router({
         model: story.model,
       });
 
-      await updateSlide(input.slideId, { imagePrompt: newImagePrompt, status: "generating" });
+      // Re-run Voyage selector against the new prompt + scene context.
+      // Best-effort: failure preserves existing slide.selectedVariants.
+      let updatedSelected = slide.selectedVariants as Record<string, string> | null;
+      try {
+        const charAssets = await getAssetsByIds(
+          (ctx.characters ?? [])
+            .map((c) => c.assetId)
+            .filter((id): id is number => typeof id === "number" && id > 0),
+        );
+        const charactersWithVariants = (ctx.characters ?? [])
+          .map((c) => {
+            const a = charAssets.find((x) => x.id === c.assetId);
+            const variants = (a?.variants as AssetVariant[] | null) ?? [];
+            return { name: c.name, variants };
+          })
+          .filter((c) => c.variants.length > 0);
+
+        let sceneVariants: AssetVariant[] | undefined;
+        if (scene?.environmentRefAssetId) {
+          const sa = await getAssetById(scene.environmentRefAssetId);
+          const sv = (sa?.variants as AssetVariant[] | null) ?? [];
+          if (sv.length > 0) sceneVariants = sv;
+        }
+
+        if (charactersWithVariants.length > 0 || sceneVariants) {
+          const result = await selectVariantsForSlideViaVoyage({
+            slide: {
+              slideNumber: slide.slideNumber,
+              textContent: slide.textContent ?? "",
+              imagePrompt: newImagePrompt,
+              charactersInSlide: (slide.charactersInSlide as string[]) ?? [],
+              sceneId: slide.sceneId ?? null,
+            },
+            scene,
+            storyTheme: story.theme ?? "",
+            charactersWithVariants,
+            sceneVariants,
+          });
+          const merged: Record<string, string> = {};
+          for (const [name, variant] of Object.entries(result.variantsByCharacter)) {
+            merged[`character:${name}`] = variant;
+          }
+          if (result.sceneVariant && slide.sceneId) {
+            merged[`scene:${slide.sceneId}`] = result.sceneVariant;
+          }
+          updatedSelected = Object.keys(merged).length > 0 ? merged : null;
+          console.log(
+            `[regenWithFreshPrompt] slide ${slide.id} variants: ${JSON.stringify(merged)} scores=${JSON.stringify(result.scores)}`,
+          );
+        }
+      } catch (e) {
+        console.warn(`[regenWithFreshPrompt] slide ${slide.id}: Voyage selector failed:`, e);
+      }
+
+      await updateSlide(input.slideId, {
+        imagePrompt: newImagePrompt,
+        selectedVariants: updatedSelected,
+        status: "generating",
+      });
 
       // Re-fetch slide to use the freshly-saved prompt + propagate to image gen.
       const refreshed = await getSlideById(input.slideId);

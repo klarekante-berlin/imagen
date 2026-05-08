@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { jsonrepair } from "jsonrepair";
 import type { Asset, AiModel, ImageFormat, Character } from "../drizzle/schema";
 import type {
+  AssetVariant,
   ConsistencyCharacterRef,
   ConsistencyContext,
   DetectedEntity,
@@ -11,6 +12,7 @@ import type {
 } from "@shared/types";
 import { ENV } from "./_core/env";
 import { PROJECT_STYLE_ANCHOR, normalizeConsistencyContext } from "./storyService";
+import { cosine, embedTextAsQuery } from "./_core/voyage";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -817,4 +819,98 @@ export async function rewriteSlideImagePrompt(input: RewriteSlideInput): Promise
     throw new Error("rewriteSlideImagePrompt: tool_use returned empty imagePrompt");
   }
   return parsed.imagePrompt.trim();
+}
+
+// ─── Variant selector — Voyage RAG (Branch B) ─────────────────────────────────
+
+export interface SelectVariantsInput {
+  slide: {
+    slideNumber: number;
+    textContent: string;
+    imagePrompt: string;
+    charactersInSlide: string[];
+    sceneId: string | null;
+  };
+  scene: Scene | null;
+  storyTheme: string;
+  charactersWithVariants: Array<{ name: string; variants: AssetVariant[] }>;
+  /** Variants on the scene-env asset, if any. */
+  sceneVariants?: AssetVariant[];
+}
+
+const CHAR_AXES: ReadonlyArray<AssetVariant["axis"]> = ["outfit", "age", "composite", "pose"];
+const SCENE_AXES: ReadonlyArray<AssetVariant["axis"]> = ["environment-moment", "composite"];
+
+function pickTopByCosine(
+  query: number[],
+  variants: AssetVariant[],
+  axes: ReadonlyArray<AssetVariant["axis"]>,
+): { name: string; score: number } | null {
+  let best: { name: string; score: number } | null = null;
+  for (const v of variants) {
+    if (!axes.includes(v.axis)) continue;
+    if (!Array.isArray(v.embedding) || v.embedding.length === 0) continue;
+    const score = cosine(query, v.embedding);
+    if (!best || score > best.score) best = { name: v.name, score };
+  }
+  return best;
+}
+
+/**
+ * Voyage RAG variant selector (Branch B).
+ *
+ * Builds a single text-as-query embedding from slide context, then for each
+ * character (and optionally scene) finds the variant with the highest cosine
+ * similarity to that query. Variants without precomputed embeddings are
+ * skipped — those fall back to the full sheet downstream.
+ *
+ * Throws when `VOYAGE_API_KEY` is missing — caller catches and persists
+ * `selectedVariants: null`.
+ */
+export async function selectVariantsForSlideViaVoyage(
+  input: SelectVariantsInput,
+): Promise<{
+  variantsByCharacter: Record<string, string>;
+  sceneVariant?: string;
+  scores: Record<string, number>;
+}> {
+  if (!process.env.VOYAGE_API_KEY) {
+    throw new Error("Voyage selector requires VOYAGE_API_KEY");
+  }
+
+  const { slide, scene, storyTheme, charactersWithVariants, sceneVariants } = input;
+
+  const queryText = [
+    storyTheme,
+    `scene: ${scene?.environment ?? ""} ${scene?.environmentLockNotes ?? ""}`.trim(),
+    `action: ${slide.textContent}`,
+    `image: ${slide.imagePrompt}`,
+  ]
+    .filter((part) => part && part.length > 0)
+    .join(" | ");
+
+  const queryVec = await embedTextAsQuery(queryText);
+
+  const variantsByCharacter: Record<string, string> = {};
+  const scores: Record<string, number> = {};
+
+  for (const char of charactersWithVariants) {
+    if (!slide.charactersInSlide.includes(char.name)) continue;
+    const top = pickTopByCosine(queryVec, char.variants, CHAR_AXES);
+    if (top) {
+      variantsByCharacter[char.name] = top.name;
+      scores[`character:${char.name}`] = top.score;
+    }
+  }
+
+  let sceneVariant: string | undefined;
+  if (sceneVariants && sceneVariants.length > 0) {
+    const top = pickTopByCosine(queryVec, sceneVariants, SCENE_AXES);
+    if (top) {
+      sceneVariant = top.name;
+      scores[`scene:${slide.sceneId ?? "_"}`] = top.score;
+    }
+  }
+
+  return { variantsByCharacter, sceneVariant, scores };
 }

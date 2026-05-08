@@ -7,6 +7,8 @@ import {
 } from "../../drizzle/schema";
 import type { AssetVariant } from "@shared/types";
 import { ENV } from "./env";
+import { prepareCroppedRefForAtlas } from "./imagePrep";
+import { embedMultimodal } from "./voyage";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -432,7 +434,95 @@ export async function extractVariantsFromSheet(
     else console.warn(`[extractVariantsFromSheet] skipping invalid variant entry: ${JSON.stringify(r)}`);
   }
 
-  return dedupeVariantNames(out);
+  const variants = dedupeVariantNames(out);
+
+  // Branch B: embed each variant via Voyage so the runtime selector can do
+  // cosine retrieval. Best-effort — if VOYAGE_API_KEY is absent or the call
+  // fails, we leave embeddings undefined and Branch B falls back to "no
+  // selector → null → full sheet". Never blocks variant extraction itself.
+  if (variants.length > 0 && process.env.VOYAGE_API_KEY) {
+    try {
+      await embedVariantsInPlace(imageSource, variants);
+    } catch (e) {
+      console.warn(
+        `[extractVariantsFromSheet] Voyage embed failed, leaving embeddings undefined:`,
+        e,
+      );
+    }
+  }
+
+  return variants;
+}
+
+/**
+ * Pull the source bytes from `imageSource` for cropping. URL → fetch; base64 →
+ * decode in place; data URI → strip prefix and decode.
+ */
+async function readSourceBytes(
+  imageSource: { type: "url"; url: string } | { type: "base64"; mediaType: string; data: string },
+): Promise<{ buffer: Buffer; mediaType: string } | null> {
+  if (imageSource.type === "base64") {
+    const data = imageSource.data.startsWith("data:")
+      ? imageSource.data.slice(imageSource.data.indexOf(",") + 1)
+      : imageSource.data;
+    return { buffer: Buffer.from(data, "base64"), mediaType: imageSource.mediaType };
+  }
+  if (imageSource.url.startsWith("data:")) {
+    const comma = imageSource.url.indexOf(",");
+    const mediaType = imageSource.url.slice(5, imageSource.url.indexOf(";"));
+    return {
+      buffer: Buffer.from(imageSource.url.slice(comma + 1), "base64"),
+      mediaType: mediaType || "image/png",
+    };
+  }
+  if (imageSource.url.startsWith("http")) {
+    const res = await fetch(imageSource.url);
+    if (!res.ok) return null;
+    return {
+      buffer: Buffer.from(await res.arrayBuffer()),
+      mediaType: res.headers.get("content-type") ?? "image/png",
+    };
+  }
+  return null;
+}
+
+/**
+ * Crop each variant out of the source sheet, batch them into one Voyage call,
+ * and assign the returned 1024-dim embeddings back onto the variant objects.
+ * Mutates `variants` in place; throws on Voyage failure (caller catches).
+ */
+async function embedVariantsInPlace(
+  imageSource: { type: "url"; url: string } | { type: "base64"; mediaType: string; data: string },
+  variants: AssetVariant[],
+): Promise<void> {
+  const bytes = await readSourceBytes(imageSource);
+  if (!bytes) {
+    console.warn("[extractVariantsFromSheet] could not read source bytes for embedding");
+    return;
+  }
+
+  const inputs: Array<{ image: { mediaType: string; data: string }; text: string }> = [];
+  const indexMap: number[] = []; // position in variants[] for each successful crop
+  for (let i = 0; i < variants.length; i++) {
+    const v = variants[i];
+    try {
+      const cropped = await prepareCroppedRefForAtlas(bytes.buffer, bytes.mediaType, v.bbox);
+      inputs.push({
+        image: { mediaType: cropped.mediaType, data: cropped.buffer.toString("base64") },
+        text: v.description,
+      });
+      indexMap.push(i);
+    } catch (e) {
+      console.warn(`[extractVariantsFromSheet] crop failed for variant "${v.name}":`, e);
+    }
+  }
+
+  if (inputs.length === 0) return;
+  const embeddings = await embedMultimodal(inputs);
+  embeddings.forEach((emb, j) => {
+    const variantIdx = indexMap[j];
+    if (variantIdx !== undefined) variants[variantIdx].embedding = emb;
+  });
 }
 
 /** Exported for tests — pure validation/dedupe path. */

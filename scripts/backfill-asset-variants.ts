@@ -11,6 +11,7 @@
  *   pnpm backfill:variants --asset-id=42              # one asset
  *   pnpm backfill:variants --all-sheets --dry-run     # report only, no DB write
  *   pnpm backfill:variants --all-sheets --force       # re-extract even if set
+ *   pnpm backfill:variants --all-sheets --with-embeddings   # Branch B: also embed via Voyage
  */
 
 import "dotenv/config";
@@ -28,14 +29,28 @@ interface CliArgs {
   allSheets: boolean;
   dryRun: boolean;
   force: boolean;
+  /**
+   * Branch B only — when set, run Voyage multimodal embeddings against each
+   * extracted variant and persist 1024-dim vectors on `variants[i].embedding`.
+   * `extractVariantsFromSheet` auto-embeds when VOYAGE_API_KEY is in env, so
+   * this flag also gates the env var (we delete it from the process when the
+   * flag is absent so plain backfills don't silently spend Voyage credits).
+   */
+  withEmbeddings: boolean;
 }
 
 function parseArgs(): CliArgs {
-  const args: CliArgs = { allSheets: false, dryRun: false, force: false };
+  const args: CliArgs = {
+    allSheets: false,
+    dryRun: false,
+    force: false,
+    withEmbeddings: false,
+  };
   for (const a of process.argv.slice(2)) {
     if (a === "--all-sheets") args.allSheets = true;
     else if (a === "--dry-run") args.dryRun = true;
     else if (a === "--force") args.force = true;
+    else if (a === "--with-embeddings") args.withEmbeddings = true;
     else if (a.startsWith("--asset-id=")) args.assetId = parseInt(a.slice("--asset-id=".length), 10);
   }
   return args;
@@ -113,6 +128,19 @@ async function processAsset(asset: Asset, args: CliArgs): Promise<"updated" | "s
 async function main() {
   const args = parseArgs();
   console.log(`[backfill-variants] flags: ${JSON.stringify(args)}`);
+
+  if (args.withEmbeddings) {
+    if (!process.env.VOYAGE_API_KEY) {
+      console.error(
+        "[backfill-variants] --with-embeddings requires VOYAGE_API_KEY in env",
+      );
+      process.exit(1);
+    }
+  } else {
+    // Without the flag: never embed, even if the env var is set in this shell.
+    // extractVariantsFromSheet checks process.env.VOYAGE_API_KEY at call time.
+    delete process.env.VOYAGE_API_KEY;
+  }
 
   let candidates: Asset[];
   if (typeof args.assetId === "number" && Number.isFinite(args.assetId)) {

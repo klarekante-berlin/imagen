@@ -50,7 +50,8 @@ import {
   WandSparklesIcon,
   FileJsonIcon,
 } from "lucide-react";
-import type { Slide } from "../../../drizzle/schema";
+import type { Asset, Slide } from "../../../drizzle/schema";
+import type { AssetVariant } from "../../../shared/types";
 import { STATUS_CONFIG } from "@/const";
 
 export default function StoryDetail() {
@@ -183,6 +184,18 @@ export default function StoryDetail() {
     },
     onError: (err) => toast.error(`Fehler: ${err.message}`),
   });
+
+  const updateSelectedVariants = trpc.slides.updateSelectedVariants.useMutation({
+    onSuccess: () => {
+      toast.success("Variante gespeichert");
+      utils.stories.get.invalidate({ id: storyId });
+    },
+    onError: (err) => toast.error(`Fehler: ${err.message}`),
+  });
+
+  // All assets — used to look up `variants[]` per character at render time.
+  // Cheap (already cached at app level by other pages); filtered client-side.
+  const { data: allAssets = [] as Asset[] } = trpc.assets.list.useQuery({});
 
   // Slide-edit dialog state
   const [editingSlideId, setEditingSlideId] = useState<number | null>(null);
@@ -697,14 +710,76 @@ export default function StoryDetail() {
                         <>
                           <span className="text-muted-foreground">·</span>
                           <span className="text-muted-foreground">Chars:</span>
-                          {(currentSlide.charactersInSlide as string[]).map((name) => (
-                            <span
-                              key={name}
-                              className="inline-flex items-center rounded-full bg-primary/10 border border-primary/20 px-2 py-0.5 text-primary text-[11px]"
-                            >
-                              {name}
-                            </span>
-                          ))}
+                          {(currentSlide.charactersInSlide as string[]).map((name) => {
+                            const charRef = (rawCtx?.characters ?? []).find(
+                              (c) => c.name === name,
+                            ) as { name: string; assetId?: number } | undefined;
+                            const asset = charRef?.assetId
+                              ? allAssets.find((a) => a.id === charRef.assetId)
+                              : undefined;
+                            const variants = (asset?.variants as AssetVariant[] | null) ?? [];
+                            const sel = (currentSlide.selectedVariants as Record<string, string> | null) ?? {};
+                            const selectedName = sel[`character:${name}`] ?? null;
+                            return (
+                              <span key={name} className="inline-flex items-center gap-1">
+                                <span className="inline-flex items-center rounded-full bg-primary/10 border border-primary/20 px-2 py-0.5 text-primary text-[11px]">
+                                  {name}
+                                </span>
+                                {variants.length > 0 && (
+                                  <VariantPicker
+                                    label={selectedName ?? "Voll-Sheet"}
+                                    variants={variants}
+                                    selected={selectedName}
+                                    disabled={updateSelectedVariants.isPending}
+                                    onPick={(variantName) =>
+                                      updateSelectedVariants.mutate({
+                                        slideId: currentSlide.id,
+                                        selectedVariants: {
+                                          [`character:${name}`]: variantName ?? "",
+                                        },
+                                      })
+                                    }
+                                  />
+                                )}
+                              </span>
+                            );
+                          })}
+                          {(() => {
+                            // Scene-variant pill (env asset). Only renders when the
+                            // current scene has an environmentRefAssetId with variants.
+                            const sceneObj = scenes.find((s) => s.id === currentSlide.sceneId);
+                            const sceneAssetId = (sceneObj as { environmentRefAssetId?: number } | undefined)
+                              ?.environmentRefAssetId;
+                            if (!sceneAssetId) return null;
+                            const sceneAsset = allAssets.find((a) => a.id === sceneAssetId);
+                            const sceneVars = (sceneAsset?.variants as AssetVariant[] | null) ?? [];
+                            if (sceneVars.length === 0) return null;
+                            const sel = (currentSlide.selectedVariants as Record<string, string> | null) ?? {};
+                            const selectedName = currentSlide.sceneId
+                              ? sel[`scene:${currentSlide.sceneId}`] ?? null
+                              : null;
+                            return (
+                              <span className="inline-flex items-center gap-1">
+                                <span className="text-muted-foreground">·</span>
+                                <span className="text-muted-foreground">Szene:</span>
+                                <VariantPicker
+                                  label={selectedName ?? "Voll-Sheet"}
+                                  variants={sceneVars}
+                                  selected={selectedName}
+                                  disabled={updateSelectedVariants.isPending || !currentSlide.sceneId}
+                                  onPick={(variantName) =>
+                                    currentSlide.sceneId &&
+                                    updateSelectedVariants.mutate({
+                                      slideId: currentSlide.id,
+                                      selectedVariants: {
+                                        [`scene:${currentSlide.sceneId}`]: variantName ?? "",
+                                      },
+                                    })
+                                  }
+                                />
+                              </span>
+                            );
+                          })()}
                         </>
                       )}
                     </div>
@@ -1245,5 +1320,91 @@ export default function StoryDetail() {
         </DialogContent>
       </Dialog>
     </AppLayout>
+  );
+}
+
+/**
+ * Compact variant chip + popover. Lists every variant with its axis + name;
+ * click selects, "Voll-Sheet" clears the selection (parent re-emits empty
+ * string → server deletes the key). Read-only score display would belong
+ * here too, but the Voyage selector currently doesn't surface scores to
+ * the slide row — see plan Branch B §UI.
+ */
+function VariantPicker({
+  label,
+  variants,
+  selected,
+  disabled,
+  onPick,
+}: {
+  label: string;
+  variants: AssetVariant[];
+  selected: string | null;
+  disabled: boolean;
+  onPick: (variantName: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          disabled={disabled}
+          className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-1.5 py-0.5 text-[11px] text-foreground hover:bg-primary/10 hover:border-primary/40 transition-colors disabled:opacity-60"
+          title="Variante wählen"
+        >
+          {label}
+          <span className="text-muted-foreground">▾</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 p-0" align="start">
+        <div className="px-3 py-2 border-b border-border">
+          <p className="text-xs font-medium text-foreground">Variante wählen</p>
+        </div>
+        <div className="max-h-64 overflow-y-auto p-1">
+          <button
+            onClick={() => {
+              onPick(null);
+              setOpen(false);
+            }}
+            className={`w-full text-left rounded-md px-2 py-1.5 text-xs hover:bg-muted ${
+              selected === null ? "bg-primary/10" : ""
+            }`}
+          >
+            <span className="font-medium text-foreground">Voll-Sheet</span>
+            <span className="text-muted-foreground ml-2">(keine Auswahl)</span>
+          </button>
+          {variants.map((v) => {
+            const isCurrent = selected === v.name;
+            const hasEmbedding = Array.isArray(v.embedding) && v.embedding.length > 0;
+            return (
+              <button
+                key={v.name}
+                onClick={() => {
+                  onPick(v.name);
+                  setOpen(false);
+                }}
+                className={`w-full text-left rounded-md px-2 py-1.5 text-xs hover:bg-muted ${
+                  isCurrent ? "bg-primary/10" : ""
+                }`}
+                title={v.description}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-foreground truncate">{v.name}</span>
+                  <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                    {v.axis}
+                    {hasEmbedding ? " · emb" : ""}
+                  </span>
+                </div>
+                {v.description && (
+                  <p className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5">
+                    {v.description}
+                  </p>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
