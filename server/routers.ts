@@ -12,7 +12,7 @@ import {
 import { storagePut } from "./storage";
 import {
   generateSlideImage, generateSlideImageFreepik,
-  detectCharactersFromScript, getPresignedStorageUrl,
+  getPresignedStorageUrl,
   normalizeConsistencyContext,
 } from "./storyService";
 import { planStory, writeStorySlides } from "./storyPlanner";
@@ -250,31 +250,6 @@ const characterRouter = router({
       const { id, ...data } = input;
       await updateCharacter(id, data);
       return { success: true };
-    }),
-});
-
-// ─── Detect Characters Router ───────────────────────────────────────────────
-
-const detectRouter = router({
-  detectCharacters: publicProcedure
-    .input(z.object({
-      scriptOrTheme: z.string().min(1),
-    }))
-    .mutation(async ({ input }) => {
-      // Load all assets for matching
-      const allAssets = await getAssets();
-      const detected = await detectCharactersFromScript(input.scriptOrTheme, allAssets);
-
-      // Enrich with asset details
-      const enriched = await Promise.all(
-        detected.map(async (d) => {
-          if (!d.suggestedAssetId) return { ...d, asset: null };
-          const asset = await getAssetById(d.suggestedAssetId);
-          return { ...d, asset: asset ?? null };
-        })
-      );
-
-      return enriched;
     }),
 });
 
@@ -687,25 +662,6 @@ const generateRouter = router({
     }),
 });
 
-// ─── Export Router ────────────────────────────────────────────────────────────
-
-const exportRouter = router({
-  getExportData: publicProcedure
-    .input(z.object({ storyId: z.number() }))
-    .query(async ({ input }) => {
-      const story = await getStoryById(input.storyId);
-      if (!story) throw new Error("Story not found");
-      const storySlides = await getSlidesByStoryId(input.storyId);
-      const completedSlides = storySlides.filter((s) => s.imageUrl);
-      return {
-        story,
-        slides: completedSlides,
-        totalSlides: storySlides.length,
-        completedSlides: completedSlides.length,
-      };
-    }),
-});
-
 // ─── App Router ───────────────────────────────────────────────────────────────
 
 export const appRouter = router({
@@ -714,8 +670,6 @@ export const appRouter = router({
   characters: characterRouter,
   stories: storyRouter,
   generate: generateRouter,
-  export: exportRouter,
-  detect: detectRouter,
 });
 
 export type AppRouter = typeof appRouter;

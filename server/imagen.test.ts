@@ -79,7 +79,6 @@ vi.mock("./storyService", () => ({
   generateSlideImage: vi.fn().mockResolvedValue({ imageKey: "test/key.png", imageUrl: "/manus-storage/test/key.png" }),
   generateSlideImageFreepik: vi.fn().mockResolvedValue({ imageKey: "test/key.png", imageUrl: "/manus-storage/test/key.png" }),
   getPresignedStorageUrl: vi.fn().mockResolvedValue(null),
-  detectCharactersFromScript: vi.fn().mockResolvedValue([]),
   normalizeConsistencyContext: vi.fn().mockImplementation((raw: unknown) => raw),
 }));
 
@@ -167,9 +166,3 @@ describe("stories router", () => {
   });
 });
 
-describe("export router", () => {
-  it("getExportData returns null for non-existent story", async () => {
-    const caller = appRouter.createCaller(createPublicContext());
-    await expect(caller.export.getExportData({ storyId: 999 })).rejects.toThrow();
-  });
-});
