@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { Asset, ImageFormat, Slide } from "../drizzle/schema";
 import type {
+  AssetVariant,
   ConsistencyContext,
   ConsistencyContextV1,
   ConsistencyContextV2,
@@ -7,7 +9,7 @@ import type {
 } from "@shared/types";
 import { storagePut, storageReadLocal } from "./storage";
 import { ENV } from "./_core/env";
-import { prepareImageForAtlasRef } from "./_core/imagePrep";
+import { prepareCroppedRefForAtlas, prepareImageForAtlasRef } from "./_core/imagePrep";
 
 // ─── V1 → V2 normalize ────────────────────────────────────────────────────────
 
@@ -463,5 +465,107 @@ export async function getPresignedStorageUrl(relativeOrAbsoluteUrl: string): Pro
     return data.url ?? null;
   } catch {
     return null;
+  }
+}
+
+// ─── Variant-aware presigning ─────────────────────────────────────────────────
+
+/** Short, stable hash of the bbox tuple — used to pin the cache key. */
+function shortHashBbox(bbox: [number, number, number, number]): string {
+  return createHash("md5").update(bbox.join(",")).digest("hex").slice(0, 8);
+}
+
+/**
+ * Pull the raw asset bytes (full sheet) for cropping. Local backend reads
+ * disk directly; forge backend goes through `getPresignedStorageUrl` and
+ * fetches once. Returns null if neither path works.
+ */
+async function readAssetBytes(
+  asset: Asset,
+): Promise<{ buffer: Buffer; contentType: string } | null> {
+  const key = (asset.imageKey || asset.imageUrl).replace(/^\/manus-storage\//, "");
+  if (!key) return null;
+
+  if (ENV.storageBackend === "local") {
+    return storageReadLocal(key);
+  }
+
+  const presigned = await getPresignedStorageUrl(asset.imageUrl);
+  if (!presigned || !presigned.startsWith("http")) return null;
+  try {
+    const res = await fetch(presigned);
+    if (!res.ok) return null;
+    const contentType = res.headers.get("content-type") ?? "image/png";
+    const buffer = Buffer.from(await res.arrayBuffer());
+    return { buffer, contentType };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve a single ref slot to a presigned URL Atlas can fetch. When
+ * `variantName` is null OR the asset has no variants, returns the full-sheet
+ * URL (legacy behavior — same as `getPresignedStorageUrl`). Otherwise crops
+ * to the named variant's bbox, caches under `assets-crops/`, and returns the
+ * cached crop's presigned URL.
+ *
+ * Falls back to the full sheet (with a console.warn) when the named variant
+ * isn't found on the asset — never throws on data drift.
+ */
+export async function getVariantPresignedUrl(
+  asset: Asset,
+  variantName: string | null,
+): Promise<string | null> {
+  if (!variantName || !asset.variants || asset.variants.length === 0) {
+    return getPresignedStorageUrl(asset.imageUrl);
+  }
+
+  const variant = (asset.variants as AssetVariant[]).find((v) => v.name === variantName);
+  if (!variant) {
+    console.warn(
+      `[getVariantPresignedUrl] asset ${asset.id} has no variant "${variantName}" — falling back to full sheet`,
+    );
+    return getPresignedStorageUrl(asset.imageUrl);
+  }
+
+  const cacheKey = `assets-crops/${asset.id}-${variant.name}-${shortHashBbox(variant.bbox)}.jpg`;
+  const cacheUrl = `/manus-storage/${cacheKey}`;
+
+  // Cache hit? Return cached crop's presigned URL.
+  if (ENV.storageBackend === "local") {
+    const existing = await storageReadLocal(cacheKey);
+    if (existing) return getPresignedStorageUrl(cacheUrl);
+  } else {
+    // forge: try a presign — if it succeeds and the GET works we treat it as
+    // existing. Cheap, idempotent.
+    const probe = await getPresignedStorageUrl(cacheUrl);
+    if (probe && probe.startsWith("http")) {
+      try {
+        const head = await fetch(probe, { method: "HEAD" });
+        if (head.ok) return probe;
+      } catch {
+        // fall through to (re)generate
+      }
+    }
+  }
+
+  // Cache miss — read sheet, crop, upload, return.
+  const bytes = await readAssetBytes(asset);
+  if (!bytes) {
+    console.warn(`[getVariantPresignedUrl] asset ${asset.id}: failed to read source bytes`);
+    return getPresignedStorageUrl(asset.imageUrl);
+  }
+
+  try {
+    const cropped = await prepareCroppedRefForAtlas(bytes.buffer, bytes.contentType, variant.bbox);
+    const { url } = await storagePut(cacheKey, cropped.buffer, cropped.mediaType);
+    return getPresignedStorageUrl(url);
+  } catch (e) {
+    console.warn(
+      `[getVariantPresignedUrl] asset ${asset.id} variant "${variant.name}": crop failed, falling back to full sheet:`,
+      e,
+    );
+    return getPresignedStorageUrl(asset.imageUrl);
   }
 }

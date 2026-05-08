@@ -5,6 +5,7 @@ import {
   CHARACTER_KINDS,
   CharacterKind,
 } from "../../drizzle/schema";
+import type { AssetVariant } from "@shared/types";
 import { ENV } from "./env";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -228,3 +229,211 @@ export function reviewStatusFromResult(
 ): "approved" | "needs_review" {
   return result.needsHumanReview ? "needs_review" : "approved";
 }
+
+// ─── Variant extraction (sheet → variant panels) ──────────────────────────────
+
+const VARIANT_AXES = ["outfit", "age", "environment-moment", "pose", "composite"] as const;
+
+const EXTRACT_VARIANTS_TOOL = {
+  name: "extract_sheet_variants",
+  description:
+    "Locate every variant panel on a multi-variant sheet (character outfits, age stages, environment moments). Returns an empty list when the sheet has no variants.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      variants: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "snake_case identifier, unique within the sheet" },
+            axis: { type: "string", enum: [...VARIANT_AXES] },
+            bbox: {
+              type: "array",
+              items: { type: "integer", minimum: 0 },
+              minItems: 4,
+              maxItems: 4,
+              description: "[x, y, w, h] in pixel coordinates relative to the sheet",
+            },
+            description: { type: "string", description: "German free text description" },
+            ageRange: { type: "string" },
+            season: { type: "string" },
+            mood: { type: "string" },
+          },
+          required: ["name", "axis", "bbox", "description"],
+        },
+      },
+    },
+    required: ["variants"],
+  },
+};
+
+const EXTRACT_VARIANTS_SYSTEM = `Du bist ein Sheet-Analyst für eine deutsche Instagram-Carousel-App. Ein Sheet kann mehrere Panels mit Varianten desselben Charakters / Ortes / Konzepts enthalten.
+
+AUFGABE: Identifiziere alle echten Varianten-Panels auf dem Sheet via tool_use.
+
+SKIP (nicht als Varianten zählen):
+- Farbpaletten / color swatches
+- 360°-Turnaround-Posen desselben Outfits (gleiche Kleidung, andere Drehung)
+- Typografie-Swatches
+- Logos / Marken
+- Reine Hintergrund-Texturen
+
+PRO PANEL ERFASSEN:
+- name: snake_case-Identifier, eindeutig pro Sheet (z.B. "cooking-apron", "winter-coat", "morning-light")
+- axis:
+  - "outfit"              für Klamotten-Varianten desselben Charakters
+  - "age"                 für Altersstufen (Kind / Teen / 30s / 60+)
+  - "environment-moment"  für Umgebungs-Varianten (morgens / abends / Sommer / Winter)
+  - "pose"                wenn Outfit identisch aber Pose/Aktion variiert (selten — meist skip)
+  - "composite"           für Multi-Achsen-Panels (z.B. Alter × Outfit zugleich)
+- bbox: [x, y, w, h] in Pixel-Koordinaten relativ zum gesamten Sheet (top-left origin)
+- description: kurzer deutscher Beschreibungstext (1 Satz), prompt-ready
+- ageRange: optional, z.B. "30s", "60+"
+- season: optional, z.B. "summer", "winter"
+- mood: optional, z.B. "neutral", "happy"
+
+WICHTIG:
+- Wenn das Sheet KEINE Variant-Matrix ist (Single-Pose-Portrait, Color-Palette only, Logo-Sheet, 360°-Turnaround) → leere variants[] zurückgeben.
+- Bbox MUSS innerhalb der Sheet-Dimensionen liegen (siehe User-Message für width/height).
+- Names MÜSSEN unique pro Sheet sein.`;
+
+function buildVariantUserContent(
+  imageSource: { type: "url"; url: string } | { type: "base64"; mediaType: string; data: string },
+  context: {
+    isCharacterSheet: boolean;
+    assetCategory: string;
+    visualDescription: string;
+    imageWidth: number;
+    imageHeight: number;
+  },
+): Anthropic.MessageParam["content"] {
+  const imageBlock: Anthropic.ImageBlockParam =
+    imageSource.type === "url"
+      ? { type: "image", source: { type: "url", url: imageSource.url } }
+      : {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: imageSource.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp",
+            data: imageSource.data,
+          },
+        };
+
+  return [
+    imageBlock,
+    {
+      type: "text",
+      text: `Sheet dimensions: ${context.imageWidth}x${context.imageHeight}px. Asset category: ${context.assetCategory}. isCharacterSheet: ${context.isCharacterSheet}. visualDescription: ${context.visualDescription}.
+
+Bitte analysiere das Sheet und rufe das Tool extract_sheet_variants auf. Wenn keine Varianten enthalten sind, gib leere variants[] zurück.`,
+    },
+  ];
+}
+
+interface RawVariant {
+  name: unknown;
+  axis: unknown;
+  bbox: unknown;
+  description: unknown;
+  ageRange?: unknown;
+  season?: unknown;
+  mood?: unknown;
+}
+
+/**
+ * Validate + normalise a single raw variant from Claude's tool_use output.
+ * Returns null when the entry is unsalvageable (bbox out of bounds, wrong
+ * shape, etc.) — caller logs and skips.
+ */
+function normaliseVariant(
+  raw: RawVariant,
+  imageWidth: number,
+  imageHeight: number,
+): AssetVariant | null {
+  if (typeof raw.name !== "string" || raw.name.trim() === "") return null;
+  if (typeof raw.axis !== "string") return null;
+  if (!VARIANT_AXES.includes(raw.axis as (typeof VARIANT_AXES)[number])) return null;
+  if (typeof raw.description !== "string") return null;
+  if (!Array.isArray(raw.bbox) || raw.bbox.length !== 4) return null;
+
+  const [x, y, w, h] = raw.bbox.map((n) => (typeof n === "number" ? Math.round(n) : NaN));
+  if (![x, y, w, h].every((n) => Number.isFinite(n) && n >= 0)) return null;
+  if (w <= 0 || h <= 0) return null;
+  if (x + w > imageWidth || y + h > imageHeight) return null;
+
+  return {
+    name: raw.name.trim(),
+    axis: raw.axis as AssetVariant["axis"],
+    bbox: [x, y, w, h],
+    description: raw.description.trim(),
+    ageRange: typeof raw.ageRange === "string" && raw.ageRange ? raw.ageRange : undefined,
+    season: typeof raw.season === "string" && raw.season ? raw.season : undefined,
+    mood: typeof raw.mood === "string" && raw.mood ? raw.mood : undefined,
+  };
+}
+
+/** Dedupe variant names — first occurrence wins; collisions get -2, -3, … suffix. */
+function dedupeVariantNames(variants: AssetVariant[]): AssetVariant[] {
+  const seen = new Map<string, number>();
+  return variants.map((v) => {
+    const count = seen.get(v.name) ?? 0;
+    seen.set(v.name, count + 1);
+    return count === 0 ? v : { ...v, name: `${v.name}-${count + 1}` };
+  });
+}
+
+/**
+ * Ask Claude to locate every variant panel on a multi-variant sheet. Used
+ * during asset upload (and in `scripts/backfill-asset-variants.ts`) to
+ * populate `assets.variants`. Robust to sheets that aren't actually variant
+ * matrices: returns `[]` rather than throwing.
+ */
+export async function extractVariantsFromSheet(
+  imageSource: { type: "url"; url: string } | { type: "base64"; mediaType: string; data: string },
+  context: {
+    isCharacterSheet: boolean;
+    assetCategory: string;
+    visualDescription: string;
+    imageWidth: number;
+    imageHeight: number;
+  },
+): Promise<AssetVariant[]> {
+  const client = getAnthropicClient();
+
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 2000,
+    system: [
+      {
+        type: "text",
+        text: EXTRACT_VARIANTS_SYSTEM,
+        cache_control: { type: "ephemeral" },
+      },
+    ],
+    tools: [EXTRACT_VARIANTS_TOOL],
+    tool_choice: { type: "tool", name: "extract_sheet_variants" },
+    messages: [{ role: "user", content: buildVariantUserContent(imageSource, context) }],
+  });
+
+  const toolUse = response.content.find(
+    (block): block is Anthropic.ToolUseBlock => block.type === "tool_use",
+  );
+  if (!toolUse) return [];
+
+  const raw = (toolUse.input as { variants?: unknown }).variants;
+  if (!Array.isArray(raw)) return [];
+
+  const out: AssetVariant[] = [];
+  for (const r of raw) {
+    if (!r || typeof r !== "object") continue;
+    const v = normaliseVariant(r as RawVariant, context.imageWidth, context.imageHeight);
+    if (v) out.push(v);
+    else console.warn(`[extractVariantsFromSheet] skipping invalid variant entry: ${JSON.stringify(r)}`);
+  }
+
+  return dedupeVariantNames(out);
+}
+
+/** Exported for tests — pure validation/dedupe path. */
+export const __testables = { normaliseVariant, dedupeVariantNames };

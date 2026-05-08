@@ -14,7 +14,7 @@ import {
 import { storagePut } from "./storage";
 import {
   generateSlideImage, generateSlideImageFreepik,
-  getPresignedStorageUrl,
+  getPresignedStorageUrl, getVariantPresignedUrl,
   normalizeConsistencyContext,
   findSceneForSlide,
   deriveSceneSlideRanges,
@@ -23,10 +23,12 @@ import { planStory, rewriteSlideImagePrompt, writeStorySlides } from "./storyPla
 import type { ConsistencyCharacterRef, ConsistencyContext, Scene, StoryPlan } from "@shared/types";
 import type { Slide, Story } from "../drizzle/schema";
 import {
-  categorizeImage, reviewStatusFromResult,
+  categorizeImage, extractVariantsFromSheet, reviewStatusFromResult,
   type CategorizeResult, type KnownCharacter,
 } from "./_core/visionCategorize";
 import { prepareImageForVision } from "./_core/imagePrep";
+import sharp from "sharp";
+import type { AssetVariant } from "@shared/types";
 import {
   ASSET_CATEGORIES, CHARACTER_KINDS, REVIEW_STATUSES,
 } from "../drizzle/schema";
@@ -149,6 +151,42 @@ const assetRouter = router({
         }
       }
 
+      // Variant extraction: only meaningful for character sheets and
+      // environment sheets. Best-effort — never blocks the upload.
+      let variants: AssetVariant[] | null = null;
+      const shouldExtractVariants =
+        !!visionResult &&
+        (visionResult.isCharacterSheet === true || category === "umgebungen");
+      if (shouldExtractVariants && visionResult) {
+        try {
+          const meta = await sharp(buffer).metadata();
+          const imageWidth = meta.width ?? 0;
+          const imageHeight = meta.height ?? 0;
+          if (imageWidth > 0 && imageHeight > 0) {
+            const presigned = await getPresignedStorageUrl(url);
+            const variantSource =
+              presigned && presigned.startsWith("http")
+                ? { type: "url" as const, url: presigned }
+                : ({
+                    type: "base64" as const,
+                    mediaType: input.mimeType,
+                    data: buffer.toString("base64"),
+                  } as const);
+            const extracted = await extractVariantsFromSheet(variantSource, {
+              isCharacterSheet: visionResult.isCharacterSheet,
+              assetCategory: category,
+              visualDescription: visionResult.visualDescription,
+              imageWidth,
+              imageHeight,
+            });
+            variants = extracted.length > 0 ? extracted : null;
+          }
+        } catch (e) {
+          console.warn("[assets.upload] variant extraction failed:", e);
+          variants = null;
+        }
+      }
+
       const id = await createAsset({
         name: input.name,
         category,
@@ -164,6 +202,7 @@ const assetRouter = router({
         setting: visionResult?.setting ?? null,
         mood: visionResult?.mood ?? null,
         dominantColors: visionResult?.dominantColors ?? null,
+        variants,
         contentHash,
         autoCategorized: !!visionResult,
         visionConfidence: visionResult?.categoryConfidence ?? null,
@@ -837,7 +876,10 @@ const generateRouter = router({
       // Get all used assets with their image URLs for reference
       const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
 
-       // Build a map: characterName -> presigned absolute URL for Atlas Cloud reference_images
+      // Resolve per-character ref assets once; the actual presigned URL is
+      // computed PER SLIDE because variant selection lives on the slide.
+      // TODO(selector branches): wire scene-env variants too — currently only
+      // character-axis variants are honoured. See `slide.selectedVariants` keys.
       const characterRefs = (ctx.characters || [])
         .filter((char) => char.assetId && char.assetId > 0)
         .map((char) => {
@@ -845,19 +887,7 @@ const generateRouter = router({
           return { name: char.name, asset };
         })
         .filter((r) => r.asset?.imageUrl);
-      const presigned = await Promise.all(
-        characterRefs.map((r) => getPresignedStorageUrl(r.asset!.imageUrl!)),
-      );
-      const characterAssetMap = new Map<string, string>();
       const presignAttempts = characterRefs.length;
-      characterRefs.forEach((r, i) => {
-        if (presigned[i]) characterAssetMap.set(r.name.toLowerCase(), presigned[i]!);
-      });
-      if (presignAttempts > 0 && characterAssetMap.size === 0) {
-        console.warn(
-          `[generate] ${presignAttempts} character ref(s) skipped — no public URL available (STORAGE_BACKEND=local has no presign). Falling back to text-only character descriptions in prompt.`,
-        );
-      }
       // Style references: all stil-referenz assets in this story (incl. typo/font sheets),
       // minus any explicitly excluded by the user at story-creation time.
       // Smart-fill below picks the right mix per slide.
@@ -884,6 +914,26 @@ const generateRouter = router({
           const slide = queue[cursor++];
           try {
             await updateSlide(slide.id, { status: "generating" });
+
+            // Resolve per-slide character ref URLs, honouring variant
+            // selection on the slide. Falls back to the full sheet when
+            // selectedVariants is empty for this character.
+            const selected = (slide.selectedVariants as Record<string, string> | null) ?? {};
+            const charRefPresigned = await Promise.all(
+              characterRefs.map((r) => {
+                const variantName = selected[`character:${r.name}`] ?? null;
+                return getVariantPresignedUrl(r.asset!, variantName);
+              }),
+            );
+            const characterAssetMap = new Map<string, string>();
+            characterRefs.forEach((r, i) => {
+              if (charRefPresigned[i]) characterAssetMap.set(r.name.toLowerCase(), charRefPresigned[i]!);
+            });
+            if (presignAttempts > 0 && characterAssetMap.size === 0) {
+              console.warn(
+                `[generate] slide ${slide.id}: ${presignAttempts} character ref(s) skipped — no public URL available.`,
+              );
+            }
 
             // Get character reference images for this specific slide.
             // Atlas hard-caps at 4 refs total. Pick characters first (more impactful
@@ -1040,7 +1090,9 @@ async function regenerateSlideImage(
   if (!imagePrompt) throw new Error("Slide has no image prompt");
   const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
 
-  // Build character reference map with presigned absolute URLs for Atlas Cloud
+  // Build character reference map with presigned absolute URLs for Atlas Cloud,
+  // honouring per-slide variant selection. TODO(selector branches): wire
+  // scene-env variants here too once selectors emit "scene:<id>" keys.
   const characterRefs = (ctx.characters || [])
     .filter((char) => char.assetId && char.assetId > 0)
     .map((char) => {
@@ -1048,8 +1100,12 @@ async function regenerateSlideImage(
       return { name: char.name, asset };
     })
     .filter((r) => r.asset?.imageUrl);
+  const selected = (slide.selectedVariants as Record<string, string> | null) ?? {};
   const presigned = await Promise.all(
-    characterRefs.map((r) => getPresignedStorageUrl(r.asset!.imageUrl!)),
+    characterRefs.map((r) => {
+      const variantName = selected[`character:${r.name}`] ?? null;
+      return getVariantPresignedUrl(r.asset!, variantName);
+    }),
   );
   const characterAssetMap = new Map<string, string>();
   characterRefs.forEach((r, i) => {

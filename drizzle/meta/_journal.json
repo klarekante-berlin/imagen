@@ -71,6 +71,13 @@
       "when": 1778224851795,
       "tag": "0009_acoustic_terror",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1778228704455,
+      "tag": "0010_fancy_goblin_queen",
+      "breakpoints": true
     }
   ]
 }
