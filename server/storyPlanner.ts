@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { jsonrepair } from "jsonrepair";
 import type { Asset, AiModel, ImageFormat, Character } from "../drizzle/schema";
 import type {
+  AssetVariant,
   ConsistencyCharacterRef,
   ConsistencyContext,
   DetectedEntity,
@@ -817,4 +818,206 @@ export async function rewriteSlideImagePrompt(input: RewriteSlideInput): Promise
     throw new Error("rewriteSlideImagePrompt: tool_use returned empty imagePrompt");
   }
   return parsed.imagePrompt.trim();
+}
+
+// ─── selectVariantsForSlide (Branch A — Claude Vision selector) ───────────────
+
+export interface SelectVariantsInput {
+  slide: {
+    slideNumber: number;
+    textContent: string;
+    imagePrompt: string;
+    charactersInSlide: string[];
+    sceneId: string | null;
+  };
+  scene: Scene | null;
+  storyTheme: string;
+  charactersWithVariants: Array<{ name: string; variants: AssetVariant[] }>;
+  sceneVariants?: AssetVariant[];
+  model: AiModel;
+}
+
+export interface SelectVariantsResult {
+  /** characterName → chosen variant.name. Characters with no good match are omitted. */
+  variantsByCharacter: Record<string, string>;
+  /** Chosen variant.name for the scene's environment ref. Omitted when unclear. */
+  sceneVariant?: string;
+  /** 1-2 Satz Begründung — logged server-side for debugging. */
+  reasoning: string;
+}
+
+const SELECT_VARIANT_SYSTEM = `Du wählst die passende Variante aus einem Sheet-Katalog für einen einzelnen Slide.
+
+Inputs:
+- Slide-Kontext (Theme, Scene, Action, ImagePrompt)
+- Pro Charakter eine Liste von Varianten { name, axis, description }
+- Optional: pro Scene eine Liste von Environment-Varianten { name, axis, description }
+
+Aufgabe:
+- Pro Charakter wähle GENAU EINE Variante deren description am besten zum Slide-Kontext passt
+- Wenn KEINE Variante deutlich besser ist als die anderen → omit (Server fällt auf full sheet zurück)
+- Skip 'composite'-Varianten nur wenn der Kontext unklar ist
+- Pro Scene-Variante: dieselbe Logik
+
+Antwort STRENG via select_variant tool_use. Variantennamen müssen EXAKT mit den Inputs übereinstimmen.`;
+
+const SELECT_VARIANT_TOOL = {
+  name: "select_variant",
+  description:
+    "Wähle pro Charakter (und optional pro Scene) die kontext-passende Variante aus dem gelieferten Sheet-Katalog.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      variantsByCharacter: {
+        type: "array",
+        description:
+          "Eine Auswahl pro Charakter. Charaktere ohne klar passende Variante WEGLASSEN (omit, kein Eintrag).",
+        items: {
+          type: "object",
+          properties: {
+            characterName: { type: "string" },
+            variantName: { type: "string" },
+          },
+          required: ["characterName", "variantName"],
+        },
+      },
+      sceneVariant: {
+        type: ["string", "null"],
+        description:
+          "Variantenname der Scene-Environment-Variante, oder null wenn unklar / keine Scene-Varianten vorliegen.",
+      },
+      reasoning: {
+        type: "string",
+        description: "1-2 Sätze Begründung für die Auswahl (in Deutsch).",
+      },
+    },
+    required: ["variantsByCharacter", "sceneVariant", "reasoning"],
+  },
+};
+
+function renderVariantList(variants: AssetVariant[]): string {
+  if (variants.length === 0) return "  (keine Varianten verfügbar)";
+  return variants
+    .map((v) => `  - ${v.name} (${v.axis}) — ${v.description}`)
+    .join("\n");
+}
+
+function buildSelectVariantUserBody(input: SelectVariantsInput): string {
+  const sceneBlock = input.scene
+    ? `- ${input.scene.id}: ${input.scene.environment}${
+        input.scene.environmentLockNotes ? `\n  Lock: ${input.scene.environmentLockNotes}` : ""
+      }`
+    : "(keine Scene-Zuordnung)";
+
+  const charBlock =
+    input.charactersWithVariants.length > 0
+      ? input.charactersWithVariants
+          .map(
+            (c) =>
+              `Charakter: ${c.name}\n${renderVariantList(c.variants)}`,
+          )
+          .join("\n\n")
+      : "(keine Charaktere mit Varianten in diesem Slide)";
+
+  const sceneVariantsBlock =
+    input.sceneVariants && input.sceneVariants.length > 0
+      ? `SCENE-VARIANTEN:\n${renderVariantList(input.sceneVariants)}`
+      : "(keine Scene-Varianten verfügbar)";
+
+  return `THEMA: ${input.storyTheme}
+
+SCENE:
+${sceneBlock}
+
+SLIDE ${input.slide.slideNumber}:
+- textContent: ${input.slide.textContent}
+- imagePrompt: ${input.slide.imagePrompt}
+- charactersInSlide: ${input.slide.charactersInSlide.join(", ") || "(keine)"}
+
+CHARAKTER-VARIANTEN:
+${charBlock}
+
+${sceneVariantsBlock}
+
+Rufe das Tool select_variant auf. Pro Charakter MAX 1 Pick, omit wenn keine deutlich besser passt. variantName muss EXAKT mit einem oben gelisteten name übereinstimmen.`;
+}
+
+/**
+ * Per-slide variant selector. Ask Claude to pick the most fitting variant
+ * (outfit / environment-moment / etc.) for each character in the slide and
+ * optionally for the scene-environment ref. Drops picks defensively when
+ * Claude returns unknown character or variant names.
+ *
+ * Caller is responsible for assembling `selectedVariants` keys
+ * (`character:${name}` / `scene:${sceneId}`) onto the slide.
+ */
+export async function selectVariantsForSlide(
+  input: SelectVariantsInput,
+): Promise<SelectVariantsResult> {
+  const client = getAnthropicClient();
+  const claudeModel = input.model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
+
+  const userContent = buildSelectVariantUserBody(input);
+
+  const response = await callClaudeWithRetry(
+    client,
+    {
+      model: claudeModel,
+      max_tokens: 1500,
+      system: [
+        {
+          type: "text",
+          text: SELECT_VARIANT_SYSTEM,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      tools: [SELECT_VARIANT_TOOL],
+      tool_choice: { type: "tool", name: "select_variant" },
+      messages: [{ role: "user", content: userContent }],
+    },
+    "selectVariantsForSlide",
+  );
+
+  const toolUse = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+  );
+  if (!toolUse) throw new Error("selectVariantsForSlide: no tool_use block in response");
+
+  const raw = toolUse.input as {
+    variantsByCharacter?: Array<{ characterName?: unknown; variantName?: unknown }>;
+    sceneVariant?: unknown;
+    reasoning?: unknown;
+  };
+
+  // Defensive: validate every pick against the actual catalog. Drop
+  // unknown characters and unknown variant names — never blow up here, the
+  // caller falls back to full sheets when the map is empty.
+  const charByName = new Map(
+    input.charactersWithVariants.map((c) => [c.name, new Set(c.variants.map((v) => v.name))]),
+  );
+  const variantsByCharacter: Record<string, string> = {};
+  for (const entry of Array.isArray(raw.variantsByCharacter) ? raw.variantsByCharacter : []) {
+    const charName = typeof entry.characterName === "string" ? entry.characterName : null;
+    const variantName = typeof entry.variantName === "string" ? entry.variantName : null;
+    if (!charName || !variantName) continue;
+    const knownVariants = charByName.get(charName);
+    if (!knownVariants) continue; // unknown character
+    if (!knownVariants.has(variantName)) continue; // unknown variant
+    variantsByCharacter[charName] = variantName;
+  }
+
+  let sceneVariant: string | undefined;
+  if (typeof raw.sceneVariant === "string" && raw.sceneVariant.length > 0) {
+    const sceneSet = new Set((input.sceneVariants ?? []).map((v) => v.name));
+    if (sceneSet.has(raw.sceneVariant)) {
+      sceneVariant = raw.sceneVariant;
+    }
+  }
+
+  const reasoning =
+    typeof raw.reasoning === "string" && raw.reasoning.trim().length > 0
+      ? raw.reasoning.trim()
+      : "";
+
+  return { variantsByCharacter, sceneVariant, reasoning };
 }

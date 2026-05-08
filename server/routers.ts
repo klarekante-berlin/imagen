@@ -19,8 +19,13 @@ import {
   findSceneForSlide,
   deriveSceneSlideRanges,
 } from "./storyService";
-import { planStory, rewriteSlideImagePrompt, writeStorySlides } from "./storyPlanner";
-import type { ConsistencyCharacterRef, ConsistencyContext, Scene, StoryPlan } from "@shared/types";
+import {
+  planStory, rewriteSlideImagePrompt, selectVariantsForSlide, writeStorySlides,
+} from "./storyPlanner";
+import type {
+  AssetVariant, ConsistencyCharacterRef, ConsistencyContext, Scene,
+  SlideContent, StoryPlan,
+} from "@shared/types";
 import type { Slide, Story } from "../drizzle/schema";
 import {
   categorizeImage, extractVariantsFromSheet, reviewStatusFromResult,
@@ -28,7 +33,6 @@ import {
 } from "./_core/visionCategorize";
 import { prepareImageForVision } from "./_core/imagePrep";
 import sharp from "sharp";
-import type { AssetVariant } from "@shared/types";
 import {
   ASSET_CATEGORIES, CHARACTER_KINDS, REVIEW_STATUSES,
 } from "../drizzle/schema";
@@ -379,6 +383,25 @@ const slidesRouter = router({
       return { success: true };
     }),
 
+  /**
+   * Merge a partial variant override into `slide.selectedVariants` and flip
+   * `needsRegen=true` so the user is nudged to re-render the image. Keys
+   * follow the `character:<name>` / `scene:<sceneId>` convention.
+   */
+  updateSelectedVariants: publicProcedure
+    .input(z.object({
+      slideId: z.number().int().positive(),
+      selectedVariants: z.record(z.string(), z.string()),
+    }))
+    .mutation(async ({ input }) => {
+      const slide = await getSlideById(input.slideId);
+      if (!slide) throw new Error("Slide not found");
+      const existing = (slide.selectedVariants as Record<string, string> | null) ?? {};
+      const merged = { ...existing, ...input.selectedVariants };
+      await updateSlide(input.slideId, { selectedVariants: merged, needsRegen: true });
+      return { success: true };
+    }),
+
   /** Reorder slides: array position (1-indexed) becomes the new slideNumber. */
   reorder: publicProcedure
     .input(z.object({ storyId: z.number(), slideIds: z.array(z.number()).min(1) }))
@@ -618,17 +641,122 @@ const storyRouter = router({
 
       await createSlides(storyId, plan.suggestedSlideCount);
 
+      // Branch A — per-slide variant selection. For each slide, ask Claude
+      // which character/scene variant best matches the slide context. Best-
+      // effort: a selector failure persists `selectedVariants: null` and
+      // falls back to full-sheet refs at image-gen time.
+      const charByName = new Map(resolvedCharacters.map((c) => [c.name, c]));
+      const charAssetIds = Array.from(
+        new Set(resolvedCharacters.map((c) => c.assetId).filter((id) => id > 0)),
+      );
+      const sceneEnvAssetIds = Array.from(
+        new Set(
+          consistencyContext.scenes
+            .map((s) => s.environmentRefAssetId)
+            .filter((id): id is number => typeof id === "number" && id > 0),
+        ),
+      );
+      const allVariantAssetIds = Array.from(new Set([...charAssetIds, ...sceneEnvAssetIds]));
+      const variantAssets = allVariantAssetIds.length > 0
+        ? await getAssetsByIds(allVariantAssetIds)
+        : [];
+      const variantAssetById = new Map(variantAssets.map((a) => [a.id, a]));
+
+      const selectedVariantsBySlide = new Map<number, Record<string, string> | null>();
+      const SELECT_CONCURRENCY = 4;
+
+      const runSelectorForSlide = async (slide: SlideContent) => {
+        const sceneId =
+          slide.sceneId ?? findSceneForSlide(consistencyContext, slide.slideNumber)?.id ?? null;
+        const scene = sceneId ? consistencyContext.scenes.find((s) => s.id === sceneId) ?? null : null;
+
+        const charactersWithVariants = (slide.charactersInSlide ?? [])
+          .map((name) => {
+            const ref = charByName.get(name);
+            if (!ref || ref.assetId <= 0) return null;
+            const asset = variantAssetById.get(ref.assetId);
+            const variants = (asset?.variants as AssetVariant[] | null) ?? [];
+            if (variants.length === 0) return null;
+            return { name, variants };
+          })
+          .filter((x): x is { name: string; variants: AssetVariant[] } => x !== null);
+
+        let sceneVariants: AssetVariant[] | undefined;
+        if (scene?.environmentRefAssetId) {
+          const sceneAsset = variantAssetById.get(scene.environmentRefAssetId);
+          const sv = (sceneAsset?.variants as AssetVariant[] | null) ?? [];
+          if (sv.length > 0) sceneVariants = sv;
+        }
+
+        if (charactersWithVariants.length === 0 && !sceneVariants) {
+          return; // nothing to select for this slide
+        }
+
+        try {
+          const result = await selectVariantsForSlide({
+            slide: {
+              slideNumber: slide.slideNumber,
+              textContent: slide.textContent,
+              imagePrompt: slide.imagePrompt,
+              charactersInSlide: slide.charactersInSlide ?? [],
+              sceneId,
+            },
+            scene,
+            storyTheme: input.theme,
+            charactersWithVariants,
+            sceneVariants,
+            model: input.model,
+          });
+
+          const map: Record<string, string> = {};
+          for (const [name, variantName] of Object.entries(result.variantsByCharacter)) {
+            map[`character:${name}`] = variantName;
+          }
+          if (result.sceneVariant && sceneId) {
+            map[`scene:${sceneId}`] = result.sceneVariant;
+          }
+          if (Object.keys(map).length > 0) {
+            selectedVariantsBySlide.set(slide.slideNumber, map);
+            console.log(
+              `[selectVariantsForSlide] slide ${slide.slideNumber}: ${Object.entries(map)
+                .map(([k, v]) => `${k}=${v}`)
+                .join(", ")} — ${result.reasoning}`,
+            );
+          }
+        } catch (e) {
+          console.warn(
+            `[selectVariantsForSlide] slide ${slide.slideNumber} failed, falling back to full sheets:`,
+            (e as Error).message,
+          );
+          selectedVariantsBySlide.set(slide.slideNumber, null);
+        }
+      };
+
+      // Mirror generateAllImages's bounded-parallel pattern.
+      let selCursor = 0;
+      const selWorker = async () => {
+        while (selCursor < slides.length) {
+          const slide = slides[selCursor++];
+          await runSelectorForSlide(slide);
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(SELECT_CONCURRENCY, slides.length) }, () => selWorker()),
+      );
+
       for (const slide of slides) {
         // Compute sceneId at write time from the planner's slideRange so each
         // slide row gets a stable per-slide scene FK. See design doc §3c.
         const sceneId =
           slide.sceneId ?? findSceneForSlide(consistencyContext, slide.slideNumber)?.id ?? null;
+        const selectedVariants = selectedVariantsBySlide.get(slide.slideNumber) ?? null;
         await updateSlideByStoryAndNumber(storyId, slide.slideNumber, {
           textContent: slide.textContent,
           caption: slide.caption,
           charactersInSlide: slide.charactersInSlide,
           imagePrompt: slide.imagePrompt,
           sceneId,
+          selectedVariants,
           status: "pending",
         });
       }
@@ -1048,7 +1176,87 @@ const generateRouter = router({
         model: story.model,
       });
 
-      await updateSlide(input.slideId, { imagePrompt: newImagePrompt, status: "generating" });
+      // Re-run the variant selector against the freshly-rewritten prompt so
+      // post-regen reference crops match the new scene/action. Best-effort —
+      // a selector failure leaves whatever was previously persisted.
+      const slideCharsInSlide = (slide.charactersInSlide as string[]) ?? [];
+      const charByName = new Map((ctx.characters ?? []).map((c) => [c.name, c]));
+      const charAssetIds = Array.from(
+        new Set(
+          slideCharsInSlide
+            .map((n) => charByName.get(n)?.assetId)
+            .filter((id): id is number => typeof id === "number" && id > 0),
+        ),
+      );
+      const sceneEnvAssetId = scene?.environmentRefAssetId;
+      const variantAssetIds = Array.from(
+        new Set([...charAssetIds, ...(sceneEnvAssetId ? [sceneEnvAssetId] : [])]),
+      );
+      const variantAssets = variantAssetIds.length > 0 ? await getAssetsByIds(variantAssetIds) : [];
+      const variantAssetById = new Map(variantAssets.map((a) => [a.id, a]));
+
+      const charactersWithVariants = slideCharsInSlide
+        .map((name) => {
+          const ref = charByName.get(name);
+          if (!ref || ref.assetId <= 0) return null;
+          const asset = variantAssetById.get(ref.assetId);
+          const variants = (asset?.variants as AssetVariant[] | null) ?? [];
+          if (variants.length === 0) return null;
+          return { name, variants };
+        })
+        .filter((x): x is { name: string; variants: AssetVariant[] } => x !== null);
+
+      let sceneVariants: AssetVariant[] | undefined;
+      if (sceneEnvAssetId) {
+        const sceneAsset = variantAssetById.get(sceneEnvAssetId);
+        const sv = (sceneAsset?.variants as AssetVariant[] | null) ?? [];
+        if (sv.length > 0) sceneVariants = sv;
+      }
+
+      let nextSelectedVariants: Record<string, string> | null | undefined;
+      if (charactersWithVariants.length > 0 || sceneVariants) {
+        try {
+          const result = await selectVariantsForSlide({
+            slide: {
+              slideNumber: slide.slideNumber,
+              textContent: slide.textContent ?? "",
+              imagePrompt: newImagePrompt,
+              charactersInSlide: slideCharsInSlide,
+              sceneId: slide.sceneId ?? null,
+            },
+            scene,
+            storyTheme: story.theme ?? "",
+            charactersWithVariants,
+            sceneVariants,
+            model: story.model,
+          });
+          const map: Record<string, string> = {};
+          for (const [name, variantName] of Object.entries(result.variantsByCharacter)) {
+            map[`character:${name}`] = variantName;
+          }
+          if (result.sceneVariant && slide.sceneId) {
+            map[`scene:${slide.sceneId}`] = result.sceneVariant;
+          }
+          nextSelectedVariants = Object.keys(map).length > 0 ? map : null;
+          console.log(
+            `[selectVariantsForSlide] regen slide ${slide.slideNumber}: ${Object.entries(map)
+              .map(([k, v]) => `${k}=${v}`)
+              .join(", ") || "(no picks)"} — ${result.reasoning}`,
+          );
+        } catch (e) {
+          console.warn(
+            `[selectVariantsForSlide] regen slide ${slide.slideNumber} failed:`,
+            (e as Error).message,
+          );
+          nextSelectedVariants = undefined; // keep existing
+        }
+      }
+
+      await updateSlide(input.slideId, {
+        imagePrompt: newImagePrompt,
+        status: "generating",
+        ...(nextSelectedVariants !== undefined ? { selectedVariants: nextSelectedVariants } : {}),
+      });
 
       // Re-fetch slide to use the freshly-saved prompt + propagate to image gen.
       const refreshed = await getSlideById(input.slideId);

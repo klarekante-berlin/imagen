@@ -51,6 +51,7 @@ import {
   FileJsonIcon,
 } from "lucide-react";
 import type { Slide } from "../../../drizzle/schema";
+import type { AssetVariant, ConsistencyCharacterRef } from "@shared/types";
 import { STATUS_CONFIG } from "@/const";
 
 export default function StoryDetail() {
@@ -183,6 +184,26 @@ export default function StoryDetail() {
     },
     onError: (err) => toast.error(`Fehler: ${err.message}`),
   });
+
+  // Pull all assets so we can resolve per-character + per-scene variants
+  // for the selector popovers below. Cheap — single query, cached.
+  const { data: allAssets } = trpc.assets.list.useQuery();
+
+  const updateSelectedVariants = trpc.slides.updateSelectedVariants.useMutation({
+    onSuccess: () => {
+      toast.success("Variante gespeichert");
+      utils.stories.get.invalidate({ id: storyId });
+      setVariantPopover(null);
+    },
+    onError: (err) => toast.error(`Fehler: ${err.message}`),
+  });
+
+  // Per-character + per-scene variant popover state. Single open at a time.
+  const [variantPopover, setVariantPopover] = useState<
+    | { kind: "character"; name: string }
+    | { kind: "scene"; sceneId: string }
+    | null
+  >(null);
 
   // Slide-edit dialog state
   const [editingSlideId, setEditingSlideId] = useState<number | null>(null);
@@ -360,6 +381,7 @@ export default function StoryDetail() {
     environmentLockNotes?: string;
     transitionToNext?: string;
     slideRange?: [number, number];
+    environmentRefAssetId?: number;
   };
   const rawCtx = story.consistencyContext as
     | {
@@ -367,7 +389,7 @@ export default function StoryDetail() {
         colorPalette?: string;
         environment?: string;
         scenes?: SceneShape[];
-        characters?: Array<{ name: string; outfit: string }>;
+        characters?: Array<{ name: string; outfit: string } & Partial<ConsistencyCharacterRef>>;
         slideCount?: number;
         version?: number;
       }
@@ -405,6 +427,32 @@ export default function StoryDetail() {
       slidesWithoutScene.push(sl);
     }
   }
+
+  // Resolve per-character variants (Branch A — Vision selector). Build a map
+  // from character name → { assetId, variants } using the consistency-context
+  // refs and the assets query. Lookup by name (case-insensitive) so the slide
+  // chip group can show variant badges + open a popover for override.
+  const assetById = new Map<number, { id: number; variants: AssetVariant[] | null }>();
+  for (const a of allAssets ?? []) {
+    assetById.set(a.id, { id: a.id, variants: (a.variants as AssetVariant[] | null) ?? null });
+  }
+  const charVariantsByName = new Map<string, AssetVariant[]>();
+  for (const c of (rawCtx?.characters ?? []) as Array<Partial<ConsistencyCharacterRef> & { name: string }>) {
+    if (typeof c.assetId !== "number" || c.assetId <= 0) continue;
+    const a = assetById.get(c.assetId);
+    if (!a?.variants || a.variants.length === 0) continue;
+    charVariantsByName.set(c.name, a.variants);
+  }
+  const sceneVariantsBySceneId = new Map<string, AssetVariant[]>();
+  for (const s of scenes) {
+    if (typeof s.environmentRefAssetId !== "number" || s.environmentRefAssetId <= 0) continue;
+    const a = assetById.get(s.environmentRefAssetId);
+    if (!a?.variants || a.variants.length === 0) continue;
+    sceneVariantsBySceneId.set(s.id, a.variants);
+  }
+
+  const slideSelectedVariants =
+    (currentSlide?.selectedVariants as Record<string, string> | null) ?? {};
 
   const storyStatus = STATUS_CONFIG[story.status as keyof typeof STATUS_CONFIG] || STATUS_CONFIG.draft;
 
@@ -697,14 +745,188 @@ export default function StoryDetail() {
                         <>
                           <span className="text-muted-foreground">·</span>
                           <span className="text-muted-foreground">Chars:</span>
-                          {(currentSlide.charactersInSlide as string[]).map((name) => (
-                            <span
-                              key={name}
-                              className="inline-flex items-center rounded-full bg-primary/10 border border-primary/20 px-2 py-0.5 text-primary text-[11px]"
-                            >
-                              {name}
-                            </span>
-                          ))}
+                          {(currentSlide.charactersInSlide as string[]).map((name) => {
+                            const variants = charVariantsByName.get(name);
+                            const selected = slideSelectedVariants[`character:${name}`];
+                            const isOpen =
+                              variantPopover?.kind === "character" && variantPopover.name === name;
+                            if (!variants || variants.length === 0) {
+                              // No variants on this character's asset — plain chip.
+                              return (
+                                <span
+                                  key={name}
+                                  className="inline-flex items-center rounded-full bg-primary/10 border border-primary/20 px-2 py-0.5 text-primary text-[11px]"
+                                >
+                                  {name}
+                                </span>
+                              );
+                            }
+                            return (
+                              <Popover
+                                key={name}
+                                open={isOpen}
+                                onOpenChange={(o) =>
+                                  setVariantPopover(o ? { kind: "character", name } : null)
+                                }
+                              >
+                                <PopoverTrigger asChild>
+                                  <button
+                                    className="inline-flex items-center gap-1 rounded-full bg-primary/10 border border-primary/20 hover:bg-primary/20 hover:border-primary/40 px-2 py-0.5 text-primary text-[11px] transition-colors"
+                                    title={`Variante für ${name} wählen`}
+                                  >
+                                    <span>{name}</span>
+                                    {selected && (
+                                      <span className="text-primary/80">◇ {selected}</span>
+                                    )}
+                                    <span className="text-muted-foreground">▾</span>
+                                  </button>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-80 p-0" align="start">
+                                  <div className="px-3 py-2 border-b border-border">
+                                    <p className="text-xs font-medium text-foreground">
+                                      Variante für {name} wählen
+                                    </p>
+                                  </div>
+                                  <div className="max-h-64 overflow-y-auto p-1">
+                                    {variants.map((v) => {
+                                      const isCurrent = selected === v.name;
+                                      return (
+                                        <button
+                                          key={v.name}
+                                          onClick={() =>
+                                            updateSelectedVariants.mutate({
+                                              slideId: currentSlide.id,
+                                              selectedVariants: { [`character:${name}`]: v.name },
+                                            })
+                                          }
+                                          disabled={updateSelectedVariants.isPending || isCurrent}
+                                          className={`w-full text-left rounded-md px-2 py-1.5 text-xs flex items-start gap-2 hover:bg-muted disabled:opacity-60 ${
+                                            isCurrent ? "bg-primary/10" : ""
+                                          }`}
+                                        >
+                                          <span className="mt-0.5 w-3 inline-flex justify-center">
+                                            {isCurrent ? (
+                                              <CheckIcon className="w-3 h-3 text-primary" />
+                                            ) : null}
+                                          </span>
+                                          <span className="flex-1 min-w-0">
+                                            <span className="font-medium text-foreground">
+                                              {v.name}
+                                            </span>
+                                            <span className="text-muted-foreground ml-1">
+                                              ({v.axis})
+                                            </span>
+                                            {v.description && (
+                                              <span className="text-muted-foreground ml-2">
+                                                — {v.description}
+                                              </span>
+                                            )}
+                                          </span>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                  <div className="border-t border-border p-2 flex justify-end">
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="text-xs h-7"
+                                      onClick={() => setVariantPopover(null)}
+                                    >
+                                      Schließen
+                                    </Button>
+                                  </div>
+                                </PopoverContent>
+                              </Popover>
+                            );
+                          })}
+                          {currentSlide.sceneId &&
+                            (sceneVariantsBySceneId.get(currentSlide.sceneId)?.length ?? 0) > 0 && (
+                              <>
+                                {(() => {
+                                  const sceneId = currentSlide.sceneId!;
+                                  const variants = sceneVariantsBySceneId.get(sceneId)!;
+                                  const selected = slideSelectedVariants[`scene:${sceneId}`];
+                                  const isOpen =
+                                    variantPopover?.kind === "scene" && variantPopover.sceneId === sceneId;
+                                  return (
+                                    <Popover
+                                      open={isOpen}
+                                      onOpenChange={(o) =>
+                                        setVariantPopover(o ? { kind: "scene", sceneId } : null)
+                                      }
+                                    >
+                                      <PopoverTrigger asChild>
+                                        <button
+                                          className="inline-flex items-center gap-1 rounded-full bg-muted border border-border hover:border-primary/40 px-2 py-0.5 text-foreground text-[11px] transition-colors"
+                                          title="Scene-Variante wählen"
+                                        >
+                                          <span className="text-muted-foreground">Scene-Variant:</span>
+                                          <span>{selected ?? "—"}</span>
+                                          <span className="text-muted-foreground">▾</span>
+                                        </button>
+                                      </PopoverTrigger>
+                                      <PopoverContent className="w-80 p-0" align="start">
+                                        <div className="px-3 py-2 border-b border-border">
+                                          <p className="text-xs font-medium text-foreground">
+                                            Scene-Variante wählen
+                                          </p>
+                                        </div>
+                                        <div className="max-h-64 overflow-y-auto p-1">
+                                          {variants.map((v) => {
+                                            const isCurrent = selected === v.name;
+                                            return (
+                                              <button
+                                                key={v.name}
+                                                onClick={() =>
+                                                  updateSelectedVariants.mutate({
+                                                    slideId: currentSlide.id,
+                                                    selectedVariants: { [`scene:${sceneId}`]: v.name },
+                                                  })
+                                                }
+                                                disabled={updateSelectedVariants.isPending || isCurrent}
+                                                className={`w-full text-left rounded-md px-2 py-1.5 text-xs flex items-start gap-2 hover:bg-muted disabled:opacity-60 ${
+                                                  isCurrent ? "bg-primary/10" : ""
+                                                }`}
+                                              >
+                                                <span className="mt-0.5 w-3 inline-flex justify-center">
+                                                  {isCurrent ? (
+                                                    <CheckIcon className="w-3 h-3 text-primary" />
+                                                  ) : null}
+                                                </span>
+                                                <span className="flex-1 min-w-0">
+                                                  <span className="font-medium text-foreground">
+                                                    {v.name}
+                                                  </span>
+                                                  <span className="text-muted-foreground ml-1">
+                                                    ({v.axis})
+                                                  </span>
+                                                  {v.description && (
+                                                    <span className="text-muted-foreground ml-2">
+                                                      — {v.description}
+                                                    </span>
+                                                  )}
+                                                </span>
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+                                        <div className="border-t border-border p-2 flex justify-end">
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="text-xs h-7"
+                                            onClick={() => setVariantPopover(null)}
+                                          >
+                                            Schließen
+                                          </Button>
+                                        </div>
+                                      </PopoverContent>
+                                    </Popover>
+                                  );
+                                })()}
+                              </>
+                            )}
                         </>
                       )}
                     </div>
