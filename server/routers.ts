@@ -10,6 +10,7 @@ import {
   createSlides, getSlidesByStoryId, getSlideById, updateSlide, updateSlideByStoryAndNumber,
   deleteSlide, markSlidesNeedingRegen,
   getCharacters, getCharacterById, getCharactersByIds, updateCharacter, resolveOrCreateCharacter,
+  getProjects, getProjectById, createProject, updateProject,
 } from "./db";
 import { storagePut } from "./storage";
 import {
@@ -432,6 +433,7 @@ const storyRouter = router({
   plan: publicProcedure
     .input(z.object({
       theme: z.string().min(1),
+      projectId: z.number().int().optional(),
       model: z.enum(["claude-sonnet-4-6", "claude-opus-4-5"]).default("claude-sonnet-4-6"),
       customSystemPrompt: z.string().optional(),
       customUserPromptPrefix: z.string().optional(),
@@ -439,9 +441,15 @@ const storyRouter = router({
     .mutation(async ({ input }) => {
       const characterLibrary = await getCharacters();
       const assetCatalog = await getAssets();
+      // Load project (falls back to first project if none specified)
+      const project = input.projectId
+        ? await getProjectById(input.projectId)
+        : (await getProjects())[0];
+      if (!project) throw new Error("No project found. Create a project first.");
       const plan = await planStory({
         theme: input.theme,
         model: input.model,
+        project,
         characterLibrary: characterLibrary.map((c) => ({
           id: c.id,
           name: c.name,
@@ -493,6 +501,7 @@ const storyRouter = router({
           draftVisualDescription: z.string().nullish(),
         })),
       }),
+      projectId: z.number().int().optional(),
       selectedAssetIdsByEntity: z.record(z.string(), z.number().nullable()).optional(),
       excludedStyleRefAssetIds: z.array(z.number().int().positive()).optional(),
       model: z.enum(["claude-sonnet-4-6", "claude-opus-4-5"]).default("claude-sonnet-4-6"),
@@ -502,6 +511,12 @@ const storyRouter = router({
       customUserPromptPrefix: z.string().optional(),
     }))
     .mutation(async ({ input }) => {
+      // Load project (falls back to first project if none specified)
+      const project = input.projectId
+        ? await getProjectById(input.projectId)
+        : (await getProjects())[0];
+      if (!project) throw new Error("No project found. Create a project first.");
+
       // Coerce zod-allowed null → undefined for downstream Scene/DetectedEntity shapes.
       const plan: StoryPlan = {
         title: input.plan.title,
@@ -595,13 +610,16 @@ const storyRouter = router({
       const styleReferenceUrls = styleAssets.map((a) => a.imageUrl).filter((u): u is string => !!u);
       for (const a of styleAssets) usedAssetIds.push(a.id);
 
+      // imageFormat: prefer explicit input override, else use project default
+      const imageFormat = (input.imageFormat ?? project.imageFormat) as "1:1" | "4:5";
+
       const { consistencyContext, slides } = await writeStorySlides({
         theme: input.theme,
         plan,
         resolvedCharacters,
         styleReferenceUrls,
         model: input.model,
-        imageFormat: input.imageFormat,
+        project,
         customSystemPrompt: input.customSystemPrompt,
         customUserPromptPrefix: input.customUserPromptPrefix,
       });
@@ -618,7 +636,8 @@ const storyRouter = router({
         status: "draft",
         model: input.model,
         imageProvider: input.imageProvider,
-        imageFormat: input.imageFormat,
+        imageFormat,
+        projectId: project.id,
         consistencyContext,
         usedAssetIds: Array.from(new Set(usedAssetIds)),
       });
@@ -950,11 +969,11 @@ const generateRouter = router({
             let result: { imageKey: string; imageUrl: string };
             if (storyRef.imageProvider === "freepik") {
               result = await generateSlideImageFreepik(
-                slide.imagePrompt!, ctxRef, slide.slideNumber, input.storyId, storyRef.imageFormat
+                slide.imagePrompt!, ctxRef, slide.slideNumber, input.storyId, storyRef.imageFormat as import("../drizzle/schema").ImageFormat
               );
             } else {
               result = await generateSlideImage(
-                slide.imagePrompt!, ctxRef, slide.slideNumber, input.storyId, storyRef.imageFormat,
+                slide.imagePrompt!, ctxRef, slide.slideNumber, input.storyId, storyRef.imageFormat as import("../drizzle/schema").ImageFormat,
                 charRefUrls,
                 styleReferenceUrls,
                 slideCharacters,
@@ -1047,11 +1066,10 @@ const generateRouter = router({
         scene,
         characters: ctx.characters ?? [],
         storyTheme: story.theme ?? "",
-        imageFormat: story.imageFormat,
+        imageFormat: story.imageFormat as import("../drizzle/schema").ImageFormat,
         model: story.model,
       });
-
-      await updateSlide(input.slideId, { imagePrompt: newImagePrompt, status: "generating" });
+      await updateSlide(input.slideId, { imagePrompt: newImagePrompt, status: "generating" });;
 
       // Re-fetch slide to use the freshly-saved prompt + propagate to image gen.
       const refreshed = await getSlideById(input.slideId);
@@ -1130,16 +1148,75 @@ async function regenerateSlideImage(
 
   if (story.imageProvider === "freepik") {
     return generateSlideImageFreepik(
-      imagePrompt, ctx, slide.slideNumber, slide.storyId, story.imageFormat,
+      imagePrompt, ctx, slide.slideNumber, slide.storyId, story.imageFormat as import("../drizzle/schema").ImageFormat,
     );
   }
   return generateSlideImage(
-    imagePrompt, ctx, slide.slideNumber, slide.storyId, story.imageFormat,
+    imagePrompt, ctx, slide.slideNumber, slide.storyId, story.imageFormat as import("../drizzle/schema").ImageFormat,
     charRefUrls, styleReferenceUrls, slideCharacters,
   );
 }
 
 // ─── App Router ───────────────────────────────────────────────────────────────
+
+// ─── Projects Router ─────────────────────────────────────────────────────────
+const projectsRouter = router({
+  list: publicProcedure.query(async () => {
+    return getProjects();
+  }),
+  get: publicProcedure
+    .input(z.object({ id: z.number().int() }))
+    .query(async ({ input }) => {
+      return getProjectById(input.id);
+    }),
+  create: publicProcedure
+    .input(z.object({
+      name: z.string().min(1),
+      description: z.string().optional(),
+      imageFormat: z.enum(["1:1", "4:5", "16:9", "9:16"]).default("1:1"),
+      planSystemPrompt: z.string().min(1),
+      writeSystemPrompt: z.string().min(1),
+      globalStylePrompt: z.string().min(1),
+      allowedAssetCategories: z.array(z.string()).optional(),
+      minFrames: z.number().int().min(1).default(1),
+      maxFrames: z.number().int().max(50).default(10),
+    }))
+    .mutation(async ({ input }) => {
+      const id = await createProject({
+        name: input.name,
+        description: input.description ?? null,
+        imageFormat: input.imageFormat,
+        planSystemPrompt: input.planSystemPrompt,
+        writeSystemPrompt: input.writeSystemPrompt,
+        globalStylePrompt: input.globalStylePrompt,
+        allowedAssetCategories: (input.allowedAssetCategories as import("../drizzle/schema").AssetCategory[] | undefined) ?? null,
+        minFrames: input.minFrames,
+        maxFrames: input.maxFrames,
+      });
+      return { id };
+    }),
+  update: publicProcedure
+    .input(z.object({
+      id: z.number().int(),
+      name: z.string().min(1).optional(),
+      description: z.string().optional(),
+      imageFormat: z.enum(["1:1", "4:5", "16:9", "9:16"]).optional(),
+      planSystemPrompt: z.string().min(1).optional(),
+      writeSystemPrompt: z.string().min(1).optional(),
+      globalStylePrompt: z.string().min(1).optional(),
+      allowedAssetCategories: z.array(z.string()).optional(),
+      minFrames: z.number().int().min(1).optional(),
+      maxFrames: z.number().int().max(50).optional(),
+    }))
+    .mutation(async ({ input }) => {
+      const { id, allowedAssetCategories, ...rest } = input;
+      await updateProject(id, {
+        ...rest,
+        allowedAssetCategories: allowedAssetCategories as import("../drizzle/schema").AssetCategory[] | undefined,
+      });
+      return { ok: true };
+    }),
+});
 
 export const appRouter = router({
   system: systemRouter,
@@ -1148,6 +1225,7 @@ export const appRouter = router({
   stories: storyRouter,
   slides: slidesRouter,
   generate: generateRouter,
+  projects: projectsRouter,
 });
 
 export type AppRouter = typeof appRouter;

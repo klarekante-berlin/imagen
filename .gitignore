@@ -121,3 +121,4 @@ import-errors.log
 
 # local-dev stack (filesystem storage backend + dockerized mysql data)
 docker-data/
+storage-data/

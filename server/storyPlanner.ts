@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { jsonrepair } from "jsonrepair";
-import type { Asset, AiModel, ImageFormat, Character } from "../drizzle/schema";
+import type { Asset, AiModel, Character, Project, ImageFormat } from "../drizzle/schema";
 import type {
   AssetVariant,
   ConsistencyCharacterRef,
@@ -11,13 +11,15 @@ import type {
   StoryPlan,
 } from "@shared/types";
 import { ENV } from "./_core/env";
-import { PROJECT_STYLE_ANCHOR, normalizeConsistencyContext } from "./storyService";
+import { normalizeConsistencyContext } from "./storyService";
+import { buildPlanSystemPrompt, buildPlanUserMessage, buildWriteSystemPrompt, buildWriteUserMessage } from "./promptBuilder";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface PlanInput {
   theme: string;
   model: AiModel;
+  project: Project;
   characterLibrary: Pick<Character, "id" | "name" | "aliases" | "kind" | "defaultDescription">[];
   assetCatalog: Asset[];
   /** If set, replaces PLAN_SYSTEM. Power-user override. */
@@ -32,7 +34,7 @@ export interface WriteInput {
   resolvedCharacters: ConsistencyCharacterRef[];
   styleReferenceUrls?: string[];
   model: AiModel;
-  imageFormat: ImageFormat;
+  project: Project;
   /** If set, replaces WRITE_SYSTEM. Power-user override. */
   customSystemPrompt?: string;
   /** If set, prepended (with newline) before the auto-generated user template. */
@@ -266,8 +268,15 @@ export async function planStory(input: PlanInput): Promise<StoryPlan> {
 
   const claudeModel = input.model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
 
-  const systemPrompt = input.customSystemPrompt?.trim() ? input.customSystemPrompt : PLAN_SYSTEM;
-  const userBody = PLAN_USER_TEMPLATE(input.theme, characterList, assetList);
+  const systemPrompt = input.customSystemPrompt?.trim()
+    ? input.customSystemPrompt
+    : buildPlanSystemPrompt(input.project);
+  const userBody = buildPlanUserMessage({
+    theme: input.theme,
+    characterList,
+    assetList,
+    project: input.project,
+  });
   const userContent = input.customUserPromptPrefix?.trim()
     ? `${input.customUserPromptPrefix}\n\n${userBody}`
     : userBody;
@@ -561,28 +570,34 @@ export async function writeStorySlides(input: WriteInput): Promise<{
   const client = getAnthropicClient();
   const claudeModel = input.model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
 
-  const userBody = WRITE_USER_TEMPLATE(input.theme, input.plan, input.resolvedCharacters, input.imageFormat);
+  const userBody = buildWriteUserMessage({
+    theme: input.theme,
+    plan: input.plan,
+    resolvedCharacters: input.resolvedCharacters,
+    styleReferenceUrls: input.styleReferenceUrls ?? [],
+    project: input.project,
+  });
   const userContent = input.customUserPromptPrefix?.trim()
     ? `${input.customUserPromptPrefix}\n\n${userBody}`
     : userBody;
 
-  // Per-slide tool-input is dense (textContent + caption + imagePrompt). Generous budget
-  // so 10-slide stories don't hit max_tokens — Anthropic returns truncated tool input
-  // (slides becomes a partial string) when max_tokens trips.
+  const writeSystem = input.customSystemPrompt?.trim()
+    ? input.customSystemPrompt
+    : buildWriteSystemPrompt(input.project);
+
+  // Per-slide tool-input is dense. Generous budget so 10-slide stories don't hit max_tokens.
   const response = await callClaudeWithRetry(
     client,
     {
       model: claudeModel,
       max_tokens: 16000,
-      system: input.customSystemPrompt?.trim()
-        ? input.customSystemPrompt
-        : [
-            {
-              type: "text",
-              text: WRITE_SYSTEM,
-              cache_control: { type: "ephemeral" },
-            },
-          ],
+      system: [
+        {
+          type: "text",
+          text: writeSystem,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
       tools: [WRITE_TOOL],
       tool_choice: { type: "tool", name: "write_story_slides" },
       messages: [
@@ -665,15 +680,13 @@ export async function writeStorySlides(input: WriteInput): Promise<{
     console.log(`[writeStorySlides] reflection failed, using first-pass slides: ${(e as Error).message}`);
   }
 
-  // Assemble v2 ConsistencyContext. The PROJECT_STYLE_ANCHOR is *not* baked
-  // into globalStylePrompt — generateSlideImage adds it once at the start
-  // and once as a final reminder. Duplicating it here would result in
-  // 3× the same anchor in the final prompt.
+  // Assemble v2 ConsistencyContext.
+  // artStyle comes from the project — no hardcoding.
   const globalStylePrompt = `Color palette: ${parsed.consistencyContext.colorPalette}. Tone: ${parsed.consistencyContext.sceneToneNotes}.`;
 
   const consistencyContext: ConsistencyContext = {
     version: 2,
-    artStyle: PROJECT_STYLE_ANCHOR,
+    artStyle: input.project.globalStylePrompt,
     colorPalette: parsed.consistencyContext.colorPalette,
     scenes: input.plan.scenes,
     characters: input.resolvedCharacters,

@@ -54,9 +54,12 @@ export default function StoryGenerator() {
   const [excludedStyleRefIds, setExcludedStyleRefIds] = useState<Set<number>>(new Set());
   const [customSystemPrompt, setCustomSystemPrompt] = useState("");
   const [customUserPromptPrefix, setCustomUserPromptPrefix] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState<number | undefined>(undefined);
 
   // Pending theme-edit awaiting user confirmation (theme typed but plan not yet discarded)
   const [pendingTheme, setPendingTheme] = useState<string | null>(null);
+
+  const { data: projects } = trpc.projects.list.useQuery();
 
   const { data: allAssets } = trpc.assets.list.useQuery(
     { category: pickerCategory || undefined },
@@ -76,6 +79,7 @@ export default function StoryGenerator() {
       const result = await planMutation.mutateAsync({
         theme,
         model,
+        projectId: selectedProjectId,
         customSystemPrompt: customSystemPrompt.trim() || undefined,
         customUserPromptPrefix: customUserPromptPrefix.trim() || undefined,
       });
@@ -124,6 +128,7 @@ export default function StoryGenerator() {
             draftVisualDescription: e.draftVisualDescription ?? undefined,
           })),
         },
+        projectId: selectedProjectId,
         selectedAssetIdsByEntity: overridesByName,
         excludedStyleRefAssetIds: excludedStyleRefIds.size > 0
           ? Array.from(excludedStyleRefIds)

@@ -1,4 +1,4 @@
-import { ImageFormat, Slide } from "../drizzle/schema";
+import type { ImageFormat, Slide } from "../drizzle/schema";
 import type {
   ConsistencyContext,
   ConsistencyContextV1,
@@ -175,7 +175,7 @@ async function atlasGenerateImage(params: {
   };
 
   if (useEdit) {
-    const rawRefs = params.referenceImageUrls!.slice(0, 4); // max 4
+    const rawRefs = params.referenceImageUrls!.slice(0, 10); // Atlas /edit supports up to 10
     // Atlas's edit endpoint only accepts HTTP(S) URLs in `images`. Any
     // data: URIs (local-storage backend) must be uploaded via uploadMedia first.
     const refs: string[] = [];
@@ -345,13 +345,12 @@ export async function generateSlideImage(
     .filter(Boolean)
     .join(" ");
 
-  // Combine reference images. Atlas hard-caps at 4 total. Characters first
-  // (max 3 — most impactful for consistency), then fill remaining slots with
-  // style references. So 1 char + up to 3 style refs, or 3 chars + 1 style.
-  const charRefs = characterReferenceUrls.slice(0, 3);
-  const remainingSlots = Math.max(0, 4 - charRefs.length);
+  // Atlas /edit endpoint supports up to 10 reference images.
+  // Priority: characters first (up to 6 for identity), then style refs (up to 4).
+  const charRefs = characterReferenceUrls.slice(0, 6);
+  const remainingSlots = Math.max(0, 10 - charRefs.length);
   const styleRefs = styleReferenceUrls.slice(0, remainingSlots);
-  const allReferenceUrls = [...charRefs, ...styleRefs].filter(Boolean).slice(0, 4);
+  const allReferenceUrls = [...charRefs, ...styleRefs].filter(Boolean).slice(0, 10);
 
   // gpt-image-2 via Atlas Cloud supports 1024x1024 and 1024x1536
   const size = imageFormat === "1:1" ? "1024x1024" : "1024x1536";
