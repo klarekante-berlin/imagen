@@ -37,7 +37,12 @@ import { storageGetSignedUrl } from "./storage";
 import type { ImageFormat } from "../drizzle/schema";
 
 // ─── Inngest Client ───────────────────────────────────────────────────────────
-export const inngest = new Inngest({ id: "imagen" });
+// isDev=true suppresses the "cloud mode but no signing key" warning in local dev.
+// In production, INNGEST_SIGNING_KEY env var must be set (isDev becomes false).
+export const inngest = new Inngest({
+  id: "imagen",
+  isDev: !process.env.INNGEST_SIGNING_KEY,
+});
 
 // ─── Fan-out: generateStoryImages ─────────────────────────────────────────────
 /**
