@@ -9,6 +9,7 @@ import Library from "./pages/Library";
 import StoryGenerator from "./pages/StoryGenerator";
 import StoryDetail from "./pages/StoryDetail";
 import Archive from "./pages/Archive";
+import Projects from "./pages/Projects";
 
 function App() {
   return (
@@ -22,6 +23,7 @@ function App() {
             <Route path="/generator" component={StoryGenerator} />
             <Route path="/story/:id" component={StoryDetail} />
             <Route path="/archive" component={Archive} />
+            <Route path="/projects" component={Projects} />
             <Route path="/404" component={NotFound} />
             <Route component={NotFound} />
           </Switch>

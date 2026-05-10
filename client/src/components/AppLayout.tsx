@@ -8,6 +8,7 @@ import {
   SparklesIcon,
   MenuIcon,
   XIcon,
+  FolderIcon,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -16,6 +17,7 @@ const navItems = [
   { href: "/library", label: "Asset Library", icon: ImageIcon },
   { href: "/generator", label: "Story Generator", icon: BookOpenIcon },
   { href: "/archive", label: "Story Archiv", icon: ArchiveIcon },
+  { href: "/projects", label: "Projekte", icon: FolderIcon },
 ];
 
 interface AppLayoutProps {

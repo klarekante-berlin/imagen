@@ -3,10 +3,12 @@ import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
+import { serve } from "inngest/express";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { inngest, generateStoryImages, generateSingleSlide } from "../jobQueue";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -34,6 +36,18 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
+
+  // Inngest webhook endpoint
+  // Dev: set INNGEST_DEV=true for inline execution (no Inngest server needed)
+  // Prod: Inngest cloud calls this endpoint to dispatch jobs
+  app.use(
+    "/api/inngest",
+    serve({
+      client: inngest,
+      functions: [generateStoryImages, generateSingleSlide],
+    })
+  );
+
   // tRPC API
   app.use(
     "/api/trpc",
@@ -58,6 +72,12 @@ async function startServer() {
 
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
+    if (process.env.NODE_ENV === "development") {
+      console.log(`Inngest endpoint: http://localhost:${port}/api/inngest`);
+      console.log(
+        `Tip: Run 'npx inngest-cli@latest dev' to enable async job queue, or set INNGEST_DEV=true for inline execution.`
+      );
+    }
   });
 }
 

@@ -44,6 +44,7 @@ import {
   PencilIcon,
   CheckCheckIcon,
   AlertTriangleIcon,
+  SparklesIcon,
 } from "lucide-react";
 import type { Asset } from "../../../drizzle/schema";
 import { CATEGORY_LABELS } from "@/const";
@@ -160,6 +161,12 @@ export default function Library() {
       utils.assets.list.invalidate();
     },
     onError: (err) => toast.error(`Fehler: ${err.message}`),
+  });
+
+  const backfillEmbeddingsMutation = trpc.assets.backfillEmbeddings.useMutation({
+    onSuccess: (res) =>
+      toast.success(`Embeddings: ${res.embedded} neu generiert, ${res.skipped} übersprungen, ${res.errors} Fehler`),
+    onError: (err) => toast.error(`Embedding-Fehler: ${err.message}`),
   });
 
   const bulkDeleteMutation = trpc.assets.bulkDelete.useMutation({
@@ -361,10 +368,22 @@ export default function Library() {
             <h1 className="font-display text-2xl font-bold text-foreground">Asset Library</h1>
             <p className="text-muted-foreground text-sm mt-1">{assets.length} Assets in {Object.keys(CATEGORY_LABELS).length - 1} Kategorien</p>
           </div>
-          <Button onClick={() => setUploadOpen(true)} className="gap-2 self-start">
-            <PlusIcon className="w-4 h-4" />
-            Asset hochladen
-          </Button>
+          <div className="flex gap-2 self-start">
+            <Button
+              variant="outline"
+              onClick={() => backfillEmbeddingsMutation.mutate()}
+              disabled={backfillEmbeddingsMutation.isPending}
+              className="gap-2"
+              title="Voyage AI Embeddings für alle Assets ohne Embedding generieren"
+            >
+              <SparklesIcon className="w-4 h-4" />
+              {backfillEmbeddingsMutation.isPending ? "Embedde…" : "Embeddings"}
+            </Button>
+            <Button onClick={() => setUploadOpen(true)} className="gap-2">
+              <PlusIcon className="w-4 h-4" />
+              Asset hochladen
+            </Button>
+          </div>
         </div>
 
         {/* Search + Filter */}

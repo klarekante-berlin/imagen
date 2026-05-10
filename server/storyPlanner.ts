@@ -13,6 +13,7 @@ import type {
 import { ENV } from "./_core/env";
 import { normalizeConsistencyContext } from "./storyService";
 import { buildPlanSystemPrompt, buildPlanUserMessage, buildWriteSystemPrompt, buildWriteUserMessage } from "./promptBuilder";
+import { findAssetsByEmbedding } from "./embeddingService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -260,10 +261,29 @@ export async function planStory(input: PlanInput): Promise<StoryPlan> {
     })
     .join("\n");
 
-  const assetList = input.assetCatalog
-    .filter((a) => a.category === "items" || a.category === "umgebungen" || a.category === "stil-referenz")
-    .slice(0, 30)
-    .map((a) => `[id:${a.id}] ${a.name} (${a.category})`)
+  // Semantic asset retrieval via Voyage AI multimodal embeddings.
+  // Falls back to keyword filter if embeddings are not yet available.
+  let semanticAssets: Asset[] = [];
+  const allowedCategories = input.project.allowedAssetCategories as string[] | null;
+  try {
+    semanticAssets = await findAssetsByEmbedding(
+      input.theme,
+      20,
+      allowedCategories && allowedCategories.length > 0 ? allowedCategories : undefined
+    );
+  } catch {
+    // Fallback: use assetCatalog with category filter
+    semanticAssets = input.assetCatalog
+      .filter((a) => {
+        if (allowedCategories && allowedCategories.length > 0) {
+          return allowedCategories.includes(a.category ?? "");
+        }
+        return a.category === "umgebungen" || a.category === "fahrzeuge" || a.category === "tiere" || a.category === "stil-referenz";
+      })
+      .slice(0, 20);
+  }
+  const assetList = semanticAssets
+    .map((a) => `[id:${a.id}] ${a.name} (${a.category})${a.visualDescription ? " — " + a.visualDescription.slice(0, 80) : ""}`)
     .join("\n");
 
   const claudeModel = input.model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";

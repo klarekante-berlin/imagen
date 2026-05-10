@@ -73,7 +73,7 @@ export default function StoryDetail() {
 
   const generateImages = trpc.generate.generateAllImages.useMutation({
     onSuccess: (data) => {
-      toast.success(`Bilder generiert! ${data.errorCount > 0 ? `${data.errorCount} Fehler.` : ""}`);
+      toast.success(data.queued ? "Bilder werden im Hintergrund generiert…" : "Bilder generiert!");
       utils.stories.get.invalidate({ id: storyId });
     },
     onError: (err) => toast.error(`Fehler: ${err.message}`),

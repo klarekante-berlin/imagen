@@ -509,6 +509,39 @@ export default function StoryGenerator() {
               </div>
             </div>
 
+            {/* Project selector — picks format, style prompts and allowed assets */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                <Palette className="w-3.5 h-3.5" /> Projekt
+              </label>
+              <Select
+                value={selectedProjectId?.toString() ?? ""}
+                onValueChange={(v) => {
+                  const id = v ? parseInt(v, 10) : undefined;
+                  setSelectedProjectId(id);
+                  const proj = projects?.find((p) => p.id === id);
+                  if (proj?.imageFormat) setImageFormat(proj.imageFormat as typeof imageFormat);
+                }}
+              >
+                <SelectTrigger className="h-9 bg-background/50 text-sm">
+                  <SelectValue placeholder="Kein Projekt (Standard-Stil)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">Kein Projekt (Standard-Stil)</SelectItem>
+                  {projects?.map((p) => (
+                    <SelectItem key={p.id} value={p.id.toString()}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedProjectId && projects && (
+                <p className="text-[10px] text-muted-foreground leading-relaxed">
+                  {projects.find((p) => p.id === selectedProjectId)?.description ?? ""}
+                </p>
+              )}
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-muted-foreground">KI-Modell</label>

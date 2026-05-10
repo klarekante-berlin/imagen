@@ -31,15 +31,26 @@ import type {
 
 // ─── Client singleton ─────────────────────────────────────────────────────────
 let _db: ReturnType<typeof drizzle> | null = null;
+let _client: ReturnType<typeof createClient> | null = null;
 
-function getDb(): ReturnType<typeof drizzle> {
+export function getDb(): ReturnType<typeof drizzle> {
   if (_db) return _db;
   const url =
     process.env.TURSO_DATABASE_URL ?? "file:./storage-data/imagen.db";
   const authToken = process.env.TURSO_AUTH_TOKEN;
-  const client = createClient({ url, authToken });
-  _db = drizzle(client, { schema });
+  _client = createClient({ url, authToken });
+  _db = drizzle(_client, { schema });
   return _db;
+}
+
+/**
+ * Returns the raw libSQL client for executing raw SQL (e.g. vector_top_k).
+ * Call getDb() first to ensure the client is initialized.
+ */
+export function getLibSQLClient(): ReturnType<typeof createClient> {
+  getDb(); // ensure initialized
+  if (!_client) throw new Error("libSQL client not initialized");
+  return _client;
 }
 
 // ─── Projects ─────────────────────────────────────────────────────────────────

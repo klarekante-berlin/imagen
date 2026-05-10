@@ -8,6 +8,13 @@
       "when": 1778403759327,
       "tag": "0000_curvy_mimic",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1778403760000,
+      "tag": "0001_add_vector_index",
+      "breakpoints": false
     }
   ]
 }

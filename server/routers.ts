@@ -33,6 +33,7 @@ import type { AssetVariant } from "@shared/types";
 import {
   ASSET_CATEGORIES, CHARACTER_KINDS, REVIEW_STATUSES,
 } from "../drizzle/schema";
+import { embedAsset, backfillEmbeddings } from "./embeddingService";
 
 // ─── Asset Router ─────────────────────────────────────────────────────────────
 
@@ -225,6 +226,14 @@ const assetRouter = router({
         }
       }
 
+      // Auto-embed: generate Voyage AI multimodal embedding in the background.
+      // Fire-and-forget — never blocks the upload response.
+      if (process.env.VOYAGE_API_KEY) {
+        embedAsset(id).catch((e) =>
+          console.warn(`[assets.upload] embedding failed for asset ${id}:`, e)
+        );
+      }
+
       return {
         id,
         imageKey: key,
@@ -289,9 +298,33 @@ const assetRouter = router({
     }),
 
   categories: publicProcedure.query(() => ASSET_CATEGORIES),
-});
 
-// ─── Character Router ─────────────────────────────────────────────────────────
+  /**
+   * Backfill Voyage AI multimodal embeddings for all assets that don't have one.
+   * Safe to call multiple times (idempotent). Processes in batches of 5.
+   * Returns stats: { total, embedded, skipped, errors }
+   */
+  backfillEmbeddings: publicProcedure
+    .mutation(async () => {
+      if (!process.env.VOYAGE_API_KEY) {
+        throw new Error("VOYAGE_API_KEY is not set — cannot generate embeddings");
+      }
+      return backfillEmbeddings(5, 1000);
+    }),
+
+  /**
+   * Re-embed a single asset (force=true overwrites existing embedding).
+   */
+  embedAsset: publicProcedure
+    .input(z.object({ id: z.number().int().positive(), force: z.boolean().default(false) }))
+    .mutation(async ({ input }) => {
+      if (!process.env.VOYAGE_API_KEY) {
+        throw new Error("VOYAGE_API_KEY is not set — cannot generate embeddings");
+      }
+      return embedAsset(input.id, { force: input.force });
+    }),
+});
+// ─── Character Router ──────────────────────────────────────────────────────────
 
 const characterRouter = router({
   list: publicProcedure.query(async () => getCharacters()),
@@ -893,116 +926,23 @@ const generateRouter = router({
       if (!story) throw new Error("Story not found");
       if (!story.consistencyContext) throw new Error("Story has no consistency context");
 
-      const storySlides = await getSlidesByStoryId(input.storyId);
-      await updateStory(input.storyId, { status: "generating_images" });
-
-      const ctx = normalizeConsistencyContext(story.consistencyContext);
-      if (!ctx) throw new Error("Story has invalid consistency context");
-
-      // Get all used assets with their image URLs for reference
-      const usedAssets = await getAssetsByIds(story.usedAssetIds || []);
-
-      // Resolve per-character ref assets. Full character sheets always go to
-      // Atlas — no per-slide variant cropping. The composer LLM (storyPlanner)
-      // bakes the chosen variant + activity into `slide.imagePrompt` at
-      // story-generation time so gpt-image-2 picks the right panel from prompt
-      // context.
-      const characterRefs = (ctx.characters || [])
-        .filter((char) => char.assetId && char.assetId > 0)
-        .map((char) => {
-          const asset = usedAssets.find((a) => a.id === char.assetId);
-          return { name: char.name, asset };
-        })
-        .filter((r) => r.asset?.imageUrl);
-      const presignAttempts = characterRefs.length;
-      // Style references: all stil-referenz assets in this story (incl. typo/font sheets),
-      // minus any explicitly excluded by the user at story-creation time.
-      // Smart-fill below picks the right mix per slide.
-      const excludedStyleIds = new Set(ctx.excludedStyleRefAssetIds ?? []);
-      const styleRefAssets = usedAssets
-        .filter((a) => a.category === "stil-referenz")
-        .filter((a) => !excludedStyleIds.has(a.id));
-      const styleReferenceUrls = (
-        await Promise.all(styleRefAssets.map((a) => getPresignedStorageUrl(a.imageUrl ?? "")))
-      ).filter((u): u is string => !!u);
-
-      // Run slide image generation in parallel, capped at concurrency 3 to
-      // respect Atlas rate limits. Order-independent — each slide is a unit.
-      const CONCURRENCY = 3;
-      let errorCount = 0;
-      const queue = storySlides.filter((s) => s.imagePrompt);
-      let cursor = 0;
-      // Re-bind narrowed locals so the closure below sees them as non-null.
-      const storyRef = story;
-      const ctxRef = ctx;
-
-      async function worker() {
-        while (cursor < queue.length) {
-          const slide = queue[cursor++];
-          try {
-            await updateSlide(slide.id, { status: "generating" });
-
-            // Always presign the full character sheet — variant selection
-            // lives in `slide.imagePrompt`, not in the storage key.
-            const charRefPresigned = await Promise.all(
-              characterRefs.map((r) => getPresignedStorageUrl(r.asset!.imageUrl ?? "")),
-            );
-            const characterAssetMap = new Map<string, string>();
-            characterRefs.forEach((r, i) => {
-              if (charRefPresigned[i]) characterAssetMap.set(r.name.toLowerCase(), charRefPresigned[i]!);
-            });
-            if (presignAttempts > 0 && characterAssetMap.size === 0) {
-              console.warn(
-                `[generate] slide ${slide.id}: ${presignAttempts} character ref(s) skipped — no public URL available.`,
-              );
-            }
-
-            // Get character reference images for this specific slide.
-            // Atlas hard-caps at 4 refs total. Pick characters first (more impactful
-            // for consistency), up to 3, then fill remaining slots with style refs.
-            const slideCharacters = (slide.charactersInSlide as string[] || []);
-            const charRefUrls = slideCharacters
-              .map((name) => characterAssetMap.get(name.toLowerCase()))
-              .filter((url): url is string => !!url)
-              .slice(0, 3);
-
-            let result: { imageKey: string; imageUrl: string };
-            if (storyRef.imageProvider === "freepik") {
-              result = await generateSlideImageFreepik(
-                slide.imagePrompt!, ctxRef, slide.slideNumber, input.storyId, storyRef.imageFormat as import("../drizzle/schema").ImageFormat
-              );
-            } else {
-              result = await generateSlideImage(
-                slide.imagePrompt!, ctxRef, slide.slideNumber, input.storyId, storyRef.imageFormat as import("../drizzle/schema").ImageFormat,
-                charRefUrls,
-                styleReferenceUrls,
-                slideCharacters,
-              );
-            }
-
-            await updateSlide(slide.id, {
-              imageKey: result.imageKey,
-              imageUrl: result.imageUrl,
-              status: "complete",
-            });
-          } catch (err) {
-            errorCount++;
-            await updateSlide(slide.id, {
-              status: "error",
-              errorMessage: err instanceof Error ? err.message : "Unknown error",
-            });
-          }
-        }
+      // Inline mode (INNGEST_DEV=true): run generation synchronously in-process.
+      // Async mode (default): dispatch to Inngest job queue for resilient,
+      // retryable, observable background processing.
+      if (process.env.INNGEST_DEV === "true") {
+        const { generateStoryImagesInline } = await import("./jobQueue");
+        await generateStoryImagesInline(input.storyId);
+        return { success: true, queued: false };
       }
 
-      await Promise.all(
-        Array.from({ length: Math.min(CONCURRENCY, queue.length) }, () => worker()),
-      );
-
-      const finalStatus = errorCount === 0 ? "complete" : errorCount === storySlides.length ? "error" : "complete";
-      await updateStory(input.storyId, { status: finalStatus });
-
-      return { success: true, errorCount };
+      // Async: send event to Inngest → fan-out per slide
+      const { inngest: inngestClient } = await import("./jobQueue");
+      await inngestClient.send({
+        name: "imagen/story.generate",
+        data: { storyId: input.storyId },
+      });
+      await updateStory(input.storyId, { status: "generating_images" });
+      return { success: true, queued: true };
     }),
 
   regenerateSlide: publicProcedure
