@@ -1,7 +1,10 @@
 type StorageBackend = "forge" | "local";
 
 function parseStorageBackend(v: string | undefined): StorageBackend {
-  return v === "local" ? "local" : "forge";
+  if (v === "forge") return "forge";
+  if (v === "local") return "local";
+  // Auto-detect: use local when no Forge credentials are configured
+  return process.env.BUILT_IN_FORGE_API_URL ? "forge" : "local";
 }
 
 export const ENV = {

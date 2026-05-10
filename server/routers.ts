@@ -1114,21 +1114,24 @@ const projectsRouter = router({
       name: z.string().min(1),
       description: z.string().optional(),
       imageFormat: z.enum(["1:1", "4:5", "16:9", "9:16"]).default("1:1"),
-      planSystemPrompt: z.string().min(1),
-      writeSystemPrompt: z.string().min(1),
-      globalStylePrompt: z.string().min(1),
+      planSystemPrompt: z.string().default(""),
+      writeSystemPrompt: z.string().default(""),
+      globalStylePrompt: z.string().default(""),
       allowedAssetCategories: z.array(z.string()).optional(),
       minFrames: z.number().int().min(1).default(1),
       maxFrames: z.number().int().max(50).default(10),
     }))
     .mutation(async ({ input }) => {
+      const DEFAULT_PLAN_PROMPT = "You are a creative story planner for Instagram carousel posts. Plan engaging, visual stories with clear scenes and consistent characters.";
+      const DEFAULT_WRITE_PROMPT = "You are a creative writer for Instagram carousel posts. Write compelling slide content with vivid image prompts that tell a cohesive visual story.";
+      const DEFAULT_STYLE_PROMPT = "Photorealistic digital illustration, vibrant colors, cinematic lighting, high detail";
       const id = await createProject({
         name: input.name,
         description: input.description ?? null,
         imageFormat: input.imageFormat,
-        planSystemPrompt: input.planSystemPrompt,
-        writeSystemPrompt: input.writeSystemPrompt,
-        globalStylePrompt: input.globalStylePrompt,
+        planSystemPrompt: input.planSystemPrompt.trim() || DEFAULT_PLAN_PROMPT,
+        writeSystemPrompt: input.writeSystemPrompt.trim() || DEFAULT_WRITE_PROMPT,
+        globalStylePrompt: input.globalStylePrompt.trim() || DEFAULT_STYLE_PROMPT,
         allowedAssetCategories: (input.allowedAssetCategories as import("../drizzle/schema").AssetCategory[] | undefined) ?? null,
         minFrames: input.minFrames,
         maxFrames: input.maxFrames,
