@@ -515,9 +515,9 @@ export default function StoryGenerator() {
                 <Palette className="w-3.5 h-3.5" /> Projekt
               </label>
               <Select
-                value={selectedProjectId?.toString() ?? ""}
+                value={selectedProjectId?.toString() ?? "none"}
                 onValueChange={(v) => {
-                  const id = v ? parseInt(v, 10) : undefined;
+                  const id = v && v !== "none" ? parseInt(v, 10) : undefined;
                   setSelectedProjectId(id);
                   const proj = projects?.find((p) => p.id === id);
                   if (proj?.imageFormat) setImageFormat(proj.imageFormat as typeof imageFormat);
@@ -527,7 +527,7 @@ export default function StoryGenerator() {
                   <SelectValue placeholder="Kein Projekt (Standard-Stil)" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">Kein Projekt (Standard-Stil)</SelectItem>
+                  <SelectItem value="none">Kein Projekt (Standard-Stil)</SelectItem>
                   {projects?.map((p) => (
                     <SelectItem key={p.id} value={p.id.toString()}>
                       {p.name}
