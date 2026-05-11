@@ -8,6 +8,9 @@ build/
 *.dist
 
 # Environment variables
+.env
+.env.local
+.env.*.local
 
 # IDE and editor files
 .vscode/
