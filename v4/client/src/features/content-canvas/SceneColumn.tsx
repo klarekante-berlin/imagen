@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { toast } from "../../lib/toast";
 import { trpc } from "../../lib/trpc";
 import type { Frame, Scene } from "../../../../drizzle/schema";
 import { FrameCard } from "./FrameCard";
@@ -29,9 +30,6 @@ export function SceneColumn({
   const addFrame = trpc.frames.create.useMutation({
     onSuccess: () => utils.frames.listByScene.invalidate({ sceneId: scene.id }),
   });
-  const generateScene = trpc.frames.generateScene.useMutation({
-    onSuccess: () => utils.frames.listByScene.invalidate({ sceneId: scene.id }),
-  });
   const suggestNext = trpc.frames.suggestNext.useMutation({
     onSuccess: async (suggestion) => {
       await addFrame.mutateAsync({
@@ -40,9 +38,19 @@ export function SceneColumn({
         caption: suggestion.caption,
         imagePrompt: suggestion.imagePrompt,
       });
-      // eslint-disable-next-line no-console
-      console.log(`[suggest] frame added: ${suggestion.reasoning}`);
+      toast.success("Frame suggested", suggestion.reasoning);
     },
+    onError: (err) => toast.error("Suggest failed", err.message),
+  });
+  const generateScene = trpc.frames.generateScene.useMutation({
+    onSuccess: (result) => {
+      toast.success(
+        "Scene generation submitted",
+        `${result.submitted} frame${result.submitted === 1 ? "" : "s"} → Atlas`,
+      );
+      utils.frames.listByScene.invalidate({ sceneId: scene.id });
+    },
+    onError: (err) => toast.error("Generate scene failed", err.message),
   });
 
   const [editing, setEditing] = useState(false);
