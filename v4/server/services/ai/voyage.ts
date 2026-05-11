@@ -3,13 +3,13 @@ import { VoyageAIClient } from "voyageai";
 const MODEL = "voyage-multimodal-3";
 const DIMS = 1024;
 
-let cached: VoyageAIClient | null = null;
+// Not cached at module scope — tsx-watch reloads on .ts edits but not .env,
+// so a cached client would keep an old key after rotation. Constructor cost
+// is negligible.
 function client(): VoyageAIClient {
-  if (cached) return cached;
   const apiKey = process.env.VOYAGE_API_KEY;
   if (!apiKey) throw new Error("VOYAGE_API_KEY missing");
-  cached = new VoyageAIClient({ apiKey });
-  return cached;
+  return new VoyageAIClient({ apiKey });
 }
 
 function f32ToBuffer(vec: number[]): Buffer {
