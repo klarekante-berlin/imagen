@@ -44,6 +44,15 @@ export default function ContentCanvas() {
   const moveFrame = trpc.frames.move.useMutation({
     onSuccess: () => utils.frames.listByScene.invalidate(),
   });
+  const syncPending = trpc.frames.syncPending.useMutation({
+    onSuccess: () => {
+      utils.frames.listByScene.invalidate();
+      utils.frames.listPending.invalidate();
+    },
+  });
+  const pendingQuery = trpc.frames.listPending.useQuery(undefined, {
+    refetchInterval: 7000,
+  });
 
   if (!storyId) return <div>Story id missing.</div>;
   if (storyQuery.isLoading) return <div className="text-sm text-[var(--text-muted)]">Loading…</div>;
@@ -67,11 +76,37 @@ export default function ContentCanvas() {
             ← Projects
           </Link>
         )}
-        <div className="mt-1 flex items-baseline gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight">{story.title}</h1>
-          <span className="rounded-full bg-[var(--surface-muted)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-            {story.kind}
-          </span>
+        <div className="mt-1 flex items-baseline justify-between gap-3">
+          <div className="flex items-baseline gap-3">
+            <h1 className="text-2xl font-semibold tracking-tight">{story.title}</h1>
+            <span className="rounded-full bg-[var(--surface-muted)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+              {story.kind}
+            </span>
+          </div>
+          <div className="flex items-center gap-3 text-xs text-[var(--text-muted)]">
+            {pendingQuery.data && pendingQuery.data.length > 0 && (
+              <span>
+                {pendingQuery.data.length} frame
+                {pendingQuery.data.length === 1 ? "" : "s"} waiting on Atlas
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => syncPending.mutate()}
+              disabled={syncPending.isPending}
+              title="Force a poll of every pending Atlas prediction now"
+              className="rounded-md border border-[var(--border)] px-2 py-1 hover:bg-[var(--surface-muted)] disabled:opacity-50"
+            >
+              {syncPending.isPending ? "Syncing…" : "Sync with Atlas"}
+            </button>
+            {syncPending.data && (
+              <span>
+                polled {syncPending.data.polled} · ready {syncPending.data.ready} ·
+                running {syncPending.data.stillGenerating}
+                {syncPending.data.failed > 0 ? ` · failed ${syncPending.data.failed}` : ""}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 

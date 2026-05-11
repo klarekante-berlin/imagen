@@ -15,6 +15,13 @@
       "when": 1778496138785,
       "tag": "0001_pretty_annihilus",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1778500252362,
+      "tag": "0002_dark_triton",
+      "breakpoints": true
     }
   ]
 }

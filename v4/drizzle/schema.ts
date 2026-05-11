@@ -287,12 +287,21 @@ export const frames = sqliteTable(
     currentRenditionId: text("current_rendition_id"),
     previousRenditionId: text("previous_rendition_id"),
     needsRegen: integer("needs_regen", { mode: "boolean" }).notNull().default(false),
+    /** Atlas prediction id we're waiting on. Null when nothing pending. */
+    pendingPredictionId: text("pending_prediction_id"),
+    /** Atlas model the pending job was submitted to (text-to-image or edit). */
+    pendingModel: text("pending_model"),
+    /** Persisted submit params so the poller can finalize the rendition row. */
+    pendingParamsJson: text("pending_params_json", { mode: "json" }).$type<RenditionParams>(),
+    /** ISO timestamp when generate was submitted — for UI elapsed display. */
+    pendingStartedAt: text("pending_started_at"),
     createdAt: text("created_at").notNull().default(now),
     updatedAt: text("updated_at").notNull().default(now),
   },
   (t) => ({
     sceneOrderIdx: index("frames_scene_order_idx").on(t.sceneId, t.orderIndex),
     statusIdx: index("frames_status_idx").on(t.status),
+    pendingIdx: index("frames_pending_idx").on(t.pendingPredictionId),
   }),
 );
 

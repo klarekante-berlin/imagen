@@ -5,6 +5,7 @@ import { appRouter } from "../routers";
 import { db } from "./db";
 import { env } from "./env";
 import { runMigrations } from "./migrate";
+import { startPendingPoller } from "./pending-poller";
 import { registerStorageProxy } from "./storageProxy";
 import { createContext } from "./trpc";
 import { serveStatic, setupVite } from "./vite";
@@ -37,6 +38,7 @@ async function main() {
   server.listen(env.port, () => {
     console.log(`[v4] Server on http://localhost:${env.port}/`);
     console.log(`[v4] DB: ${env.dbUrl}`);
+    startPendingPoller();
   });
 }
 
