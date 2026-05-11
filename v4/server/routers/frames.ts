@@ -10,6 +10,10 @@ import {
   listPendingFrames,
   submitFrameForGeneration,
 } from "../services/ai/generate-frame";
+import { resolveStoryReferenceAssets } from "../services/ai/reference-resolver";
+import { suggestNextFrame } from "../services/ai/suggest-frame";
+import { getPromptRevision } from "../services/db/prompts";
+import type { PromptKey } from "../../shared/types/enums";
 import {
   compactSceneOrder,
   createFrame,
@@ -244,4 +248,72 @@ export const framesRouter = router({
 
   /** Frames waiting on an Atlas prediction (any story, any scene). */
   listPending: publicProcedure.query(() => listPendingFrames()),
+
+  /**
+   * Ask Claude to propose the next frame's content for a scene. Returns the
+   * suggestion as a draft — the client decides whether to call frames.create
+   * with it.
+   */
+  suggestNext: publicProcedure
+    .input(
+      z.object({
+        sceneId: z.string(),
+        model: z.string().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      if (!process.env.ANTHROPIC_API_KEY) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "ANTHROPIC_API_KEY not set.",
+        });
+      }
+      const scene = await getScene(input.sceneId);
+      if (!scene) throw new TRPCError({ code: "NOT_FOUND" });
+      const story = await getStory(scene.storyId);
+      if (!story) throw new TRPCError({ code: "NOT_FOUND" });
+      const project = story.projectId ? await getProject(story.projectId) : undefined;
+
+      const activePromptIds = project?.activePromptIdsJson ?? {};
+      const prompts: Partial<Record<PromptKey, string>> = {};
+      for (const key of ["plan", "write", "style", "anticipate"] as PromptKey[]) {
+        const revId = activePromptIds[key];
+        if (!revId) continue;
+        const rev = await getPromptRevision(revId);
+        if (rev) prompts[key] = rev.text;
+      }
+
+      // Resolve characters available to this story for the prompt context.
+      const resolved = await resolveStoryReferenceAssets(story.id, story.projectId, {
+        persistBackfill: false,
+      });
+
+      const styleAnchorText =
+        story.styleAnchorText ?? project?.styleAnchorText ?? null;
+
+      const framesSoFar = await listFramesForScene(input.sceneId);
+
+      try {
+        const suggestion = await suggestNextFrame({
+          story,
+          scene,
+          project,
+          prompts,
+          styleAnchorText,
+          attachedCharNames: Array.from(new Set(resolved.attachedCharNames)),
+          framesSoFar,
+          model: input.model,
+        });
+        return suggestion;
+      } catch (err) {
+        const m = (err as Error).message ?? "Unknown error";
+        if (/401|authentication_error/i.test(m)) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Anthropic rejected the key." });
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Suggest failed: ${m.slice(0, 240)}`,
+        });
+      }
+    }),
 });

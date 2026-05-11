@@ -32,6 +32,18 @@ export function SceneColumn({
   const generateScene = trpc.frames.generateScene.useMutation({
     onSuccess: () => utils.frames.listByScene.invalidate({ sceneId: scene.id }),
   });
+  const suggestNext = trpc.frames.suggestNext.useMutation({
+    onSuccess: async (suggestion) => {
+      await addFrame.mutateAsync({
+        sceneId: scene.id,
+        textOverlay: suggestion.textOverlay,
+        caption: suggestion.caption,
+        imagePrompt: suggestion.imagePrompt,
+      });
+      // eslint-disable-next-line no-console
+      console.log(`[suggest] frame added: ${suggestion.reasoning}`);
+    },
+  });
 
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(scene.title ?? "");
@@ -167,38 +179,46 @@ export function SceneColumn({
         {dragOverIdx === frames.length && (
           <div className="h-1 rounded bg-[var(--accent)]" />
         )}
-        <div className="flex gap-2">
+        <div className="flex gap-1">
           <button
             type="button"
-            onClick={() => {
-              const last = frames[frames.length - 1];
-              addFrame.mutate({
-                sceneId: scene.id,
-                cloneFromFrameId: last?.id,
-              });
-            }}
-            disabled={addFrame.isPending}
-            title={
-              frames.length > 0
-                ? "Add a frame pre-filled from the last one"
-                : "Add an empty frame"
-            }
+            onClick={() => suggestNext.mutate({ sceneId: scene.id })}
+            disabled={suggestNext.isPending || addFrame.isPending}
+            title="Let Claude propose the next frame based on the scene so far"
             className="flex-1 rounded-md border border-dashed border-[var(--border)] py-2 text-xs text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)] disabled:opacity-50"
           >
-            {frames.length > 0 ? "+ Frame (clone last)" : "+ Frame"}
+            {suggestNext.isPending ? "AI drafting…" : "✨ Suggest"}
           </button>
           {frames.length > 0 && (
             <button
               type="button"
-              onClick={() => addFrame.mutate({ sceneId: scene.id })}
+              onClick={() => {
+                const last = frames[frames.length - 1];
+                addFrame.mutate({
+                  sceneId: scene.id,
+                  cloneFromFrameId: last?.id,
+                });
+              }}
               disabled={addFrame.isPending}
-              title="Add an empty frame"
+              title="Add a frame pre-filled from the last one"
               className="rounded-md border border-dashed border-[var(--border)] px-2 py-2 text-xs text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)] disabled:opacity-50"
             >
-              empty
+              clone
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => addFrame.mutate({ sceneId: scene.id })}
+            disabled={addFrame.isPending}
+            title="Add an empty frame"
+            className="rounded-md border border-dashed border-[var(--border)] px-2 py-2 text-xs text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)] disabled:opacity-50"
+          >
+            empty
+          </button>
         </div>
+        {suggestNext.error && (
+          <div className="mt-1 text-[10px] text-[var(--danger)]">{suggestNext.error.message}</div>
+        )}
       </div>
     </div>
   );
