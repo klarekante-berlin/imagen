@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useRoute } from "wouter";
+import { AttachmentBar } from "../features/content-canvas/AttachmentBar";
 import { FrameInspector } from "../features/content-canvas/FrameInspector";
 import { SceneColumn } from "../features/content-canvas/SceneColumn";
 import { ScriptPaste } from "../features/content-canvas/ScriptPaste";
@@ -82,6 +83,8 @@ export default function ContentCanvas() {
           setActiveFrameId(null);
         }}
       />
+
+      <AttachmentBar storyId={storyId} />
 
       <ScriptPaste
         storyId={storyId}
