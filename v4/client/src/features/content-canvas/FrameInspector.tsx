@@ -1,0 +1,130 @@
+import { useEffect, useState } from "react";
+import { trpc } from "../../lib/trpc";
+import { TRANSPARENCY_MODES, type TransparencyMode } from "@v4shared/types/enums";
+
+type Props = {
+  frameId: string;
+  onDeleted: () => void;
+};
+
+export function FrameInspector({ frameId, onDeleted }: Props) {
+  const frameQuery = trpc.frames.get.useQuery({ id: frameId });
+  const utils = trpc.useUtils();
+  const update = trpc.frames.update.useMutation({
+    onSuccess: () => {
+      utils.frames.get.invalidate({ id: frameId });
+      utils.frames.listByScene.invalidate();
+    },
+  });
+  const remove = trpc.frames.delete.useMutation({
+    onSuccess: () => {
+      utils.frames.listByScene.invalidate();
+      onDeleted();
+    },
+  });
+
+  const [prompt, setPrompt] = useState("");
+  const [overlay, setOverlay] = useState("");
+  const [caption, setCaption] = useState("");
+  const [transparency, setTransparency] = useState<TransparencyMode>("opaque");
+
+  useEffect(() => {
+    if (!frameQuery.data) return;
+    setPrompt(frameQuery.data.imagePrompt ?? "");
+    setOverlay(frameQuery.data.textOverlay ?? "");
+    setCaption(frameQuery.data.caption ?? "");
+    setTransparency(frameQuery.data.transparencyMode);
+  }, [frameQuery.data]);
+
+  if (frameQuery.isLoading) {
+    return <div className="text-sm text-[var(--text-muted)]">Loading…</div>;
+  }
+  if (!frameQuery.data) {
+    return <div className="text-sm text-[var(--text-muted)]">Frame not found.</div>;
+  }
+
+  function save(patch: {
+    imagePrompt?: string;
+    textOverlay?: string;
+    caption?: string;
+    transparencyMode?: TransparencyMode;
+  }) {
+    update.mutate({ id: frameId, ...patch });
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium">Inspector</h3>
+        <span className="rounded-full bg-[var(--surface-muted)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+          {frameQuery.data.status}
+        </span>
+      </div>
+
+      <label className="flex flex-col gap-1">
+        <span className="text-xs text-[var(--text-muted)]">Text overlay</span>
+        <input
+          value={overlay}
+          onChange={(e) => setOverlay(e.target.value)}
+          onBlur={() => save({ textOverlay: overlay })}
+          placeholder="One-liner on the image"
+          className="rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm"
+        />
+      </label>
+
+      <label className="flex flex-col gap-1">
+        <span className="text-xs text-[var(--text-muted)]">Caption</span>
+        <input
+          value={caption}
+          onChange={(e) => setCaption(e.target.value)}
+          onBlur={() => save({ caption })}
+          placeholder="Off-image text (alt / IG caption fragment)"
+          className="rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm"
+        />
+      </label>
+
+      <label className="flex flex-col gap-1">
+        <span className="text-xs text-[var(--text-muted)]">Image prompt</span>
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          onBlur={() => save({ imagePrompt: prompt })}
+          rows={6}
+          placeholder="Describe the image. Concrete details, characters present, mood."
+          className="rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm font-mono"
+        />
+      </label>
+
+      <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+        <span>Transparency:</span>
+        <select
+          value={transparency}
+          onChange={(e) => {
+            const mode = e.target.value as TransparencyMode;
+            setTransparency(mode);
+            save({ transparencyMode: mode });
+          }}
+          className="rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-xs"
+        >
+          {TRANSPARENCY_MODES.map((m) => (
+            <option key={m} value={m}>
+              {m.replace("_", " ")}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <div className="border-t border-[var(--border)] pt-3">
+        <button
+          type="button"
+          onClick={() => {
+            if (confirm("Delete this frame?")) remove.mutate({ id: frameId });
+          }}
+          className="text-xs text-[var(--text-muted)] hover:text-[var(--danger)]"
+        >
+          Delete frame
+        </button>
+      </div>
+    </div>
+  );
+}
