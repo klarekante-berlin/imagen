@@ -4,7 +4,9 @@ import type { PublicAsset } from "@v4shared/types/asset-view";
 import { AssetDrawer } from "./AssetDrawer";
 
 type Props = {
-  projectId: string;
+  /** Either projectId or characterId scopes the grid. When both are present,
+   * characterId wins (we list the character's sheets). */
+  projectId?: string;
   characterId?: string;
 };
 
@@ -17,8 +19,8 @@ function formatBytes(b?: number | null): string | null {
 
 export function AssetGrid({ projectId, characterId }: Props) {
   const projectQuery = trpc.assets.listByProject.useQuery(
-    { projectId },
-    { enabled: !characterId },
+    { projectId: projectId ?? "" },
+    { enabled: !characterId && !!projectId },
   );
   const charQuery = trpc.assets.listByCharacter.useQuery(
     { characterId: characterId ?? "" },

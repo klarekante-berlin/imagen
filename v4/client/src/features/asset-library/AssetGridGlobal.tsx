@@ -5,7 +5,10 @@ import type { AssetKind } from "@v4shared/types/enums";
 import { AssetDrawer } from "./AssetDrawer";
 
 type Props = {
+  /** Optional kind filter passed to the server. */
   kinds?: AssetKind[];
+  /** Pre-filtered assets — when provided, skips the server query and renders these. */
+  filteredAssets?: PublicAsset[];
 };
 
 function formatBytes(b?: number | null): string | null {
@@ -15,23 +18,25 @@ function formatBytes(b?: number | null): string | null {
   return `${b} B`;
 }
 
-export function AssetGridGlobal({ kinds }: Props) {
-  const query = trpc.assets.list.useQuery(kinds ? { kinds } : undefined);
+export function AssetGridGlobal({ kinds, filteredAssets }: Props) {
+  const query = trpc.assets.list.useQuery(kinds ? { kinds } : undefined, {
+    enabled: !filteredAssets,
+  });
   const charactersQuery = trpc.characters.list.useQuery();
   const worldsQuery = trpc.worlds.list.useQuery();
-  const assets: PublicAsset[] = query.data ?? [];
+  const assets: PublicAsset[] = filteredAssets ?? query.data ?? [];
   const characters = charactersQuery.data ?? [];
   const worlds = worldsQuery.data ?? [];
 
   const [openAsset, setOpenAsset] = useState<PublicAsset | null>(null);
 
-  if (query.isLoading) {
+  if (!filteredAssets && query.isLoading) {
     return <div className="text-sm text-[var(--text-muted)]">Loading…</div>;
   }
   if (assets.length === 0) {
     return (
       <div className="rounded-md border border-dashed border-[var(--border)] p-6 text-sm text-[var(--text-muted)]">
-        Library is empty.
+        {filteredAssets ? "Nothing matches the filters." : "Library is empty."}
       </div>
     );
   }
