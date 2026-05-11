@@ -14,14 +14,16 @@ import { listCharactersForWorld } from "./characters";
 export type StoryAttachmentContext = {
   worlds: World[];
   characters: Character[];
-  styleAssets: Asset[];
+  /** Every asset attached directly to the story or its project, regardless of kind. */
+  attachedAssets: Asset[];
 };
 
 /**
  * Resolve everything attached to a story scope (and the project it belongs to,
  * if any) into concrete world/character/asset rows. Characters that are part
- * of an attached world are pulled in transitively. Asset list is limited to
- * style_ref + environment + prop kinds — those are usable as reference images.
+ * of an attached world are pulled in transitively. All attached assets are
+ * returned regardless of kind — the caller (e.g. reference resolution for
+ * image gen) decides how to use them.
  */
 export async function resolveStoryAttachmentContext(
   storyId: string,
@@ -65,12 +67,12 @@ export async function resolveStoryAttachmentContext(
         .where(inArray(charactersTable.id, Array.from(characterIds)))
     : [];
 
-  const styleAssets = assetIds.size > 0
+  const attachedAssets = assetIds.size > 0
     ? await db
         .select()
         .from(assetsTable)
         .where(inArray(assetsTable.id, Array.from(assetIds)))
     : [];
 
-  return { worlds, characters, styleAssets };
+  return { worlds, characters, attachedAssets };
 }

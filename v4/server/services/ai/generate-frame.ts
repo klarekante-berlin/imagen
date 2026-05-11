@@ -1,4 +1,4 @@
-import { eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import { db } from "../../_core/db";
 import {
   assets as assetsTable,
@@ -8,6 +8,7 @@ import {
   type Scene,
 } from "../../../drizzle/schema";
 import type { RenditionParams } from "../../../shared/types/domain";
+import { updateCharacter } from "../db/characters";
 import { getFrame, updateFrame } from "../db/frames";
 import { createRendition, deleteRendition } from "../db/renditions";
 import { getScene } from "../db/scenes";
@@ -16,36 +17,96 @@ import { resolveStoryAttachmentContext } from "../db/story-context";
 import { storageDelete, storagePut, storageRead } from "../storage";
 import { atlasPoll, atlasSubmit, atlasUploadMedia } from "./atlas";
 
-type RefSource = { kind: "character_sheet" | "style_ref"; asset: Asset };
+type ResolvedRef = {
+  asset: Asset;
+  source: "character_primary" | "attached_asset";
+  characterName?: string;
+};
 
-async function loadAttachedRefs(scene: Scene, storyId: string, projectId: string | null) {
+async function loadAssetById(id: string): Promise<Asset | null> {
+  const [a] = await db.select().from(assetsTable).where(eq(assetsTable.id, id)).limit(1);
+  return a ?? null;
+}
+
+async function loadAssetByCharacter(characterId: string): Promise<Asset | null> {
+  // First match wins. Cheap fallback when character.primaryAssetId is null.
+  const [a] = await db
+    .select()
+    .from(assetsTable)
+    .where(and(eq(assetsTable.characterId, characterId), eq(assetsTable.kind, "character_sheet")))
+    .limit(1);
+  return a ?? null;
+}
+
+/**
+ * Builds the final reference list for an Atlas edit call.
+ *
+ * Sources (deduplicated, preserving the first occurrence):
+ *  1. For each character attached to the story (or to its project / world):
+ *     use character.primaryAssetId if set; otherwise look up any
+ *     character_sheet asset whose characterId points back at the character.
+ *     If we find one this way, write the pointer back so the next run is
+ *     direct.
+ *  2. Every asset attached directly to the story or project, in any kind
+ *     (character_sheet, environment, style_ref, prop, generated_frame).
+ *
+ * Up to 10 refs total (Atlas's edit cap). Order: character sheets first
+ * (identity), then everything else.
+ */
+async function resolveReferenceAssets(
+  scene: Scene,
+  storyId: string,
+  projectId: string | null,
+): Promise<{
+  refs: ResolvedRef[];
+  attachedCharNames: string[];
+}> {
   const ctx = await resolveStoryAttachmentContext(storyId, projectId);
 
-  const charRefs: RefSource[] = [];
+  const refs: ResolvedRef[] = [];
+  const seenAssetIds = new Set<string>();
+  const attachedCharNames: string[] = [];
+
+  // 1) Character primary sheets — with lazy backfill.
   for (const c of ctx.characters) {
-    if (!c.primaryAssetId) continue;
-    const [a] = await db
-      .select()
-      .from(assetsTable)
-      .where(eq(assetsTable.id, c.primaryAssetId))
-      .limit(1);
-    if (a) charRefs.push({ kind: "character_sheet", asset: a });
+    let asset: Asset | null = null;
+    if (c.primaryAssetId) {
+      asset = await loadAssetById(c.primaryAssetId);
+    }
+    if (!asset) {
+      const fallback = await loadAssetByCharacter(c.id);
+      if (fallback) {
+        asset = fallback;
+        // Backfill so subsequent runs hit the direct path.
+        await updateCharacter(c.id, { primaryAssetId: fallback.id });
+      }
+    }
+    if (!asset) continue;
+    if (seenAssetIds.has(asset.id)) {
+      attachedCharNames.push(c.name);
+      continue;
+    }
+    seenAssetIds.add(asset.id);
+    refs.push({ asset, source: "character_primary", characterName: c.name });
+    attachedCharNames.push(c.name);
   }
 
-  const styleRefs: RefSource[] = ctx.styleAssets
-    .filter((a) => a.kind === "style_ref")
-    .map((a) => ({ kind: "style_ref" as const, asset: a }));
+  // 2) Directly attached assets — every kind passes through.
+  for (const a of ctx.attachedAssets) {
+    if (seenAssetIds.has(a.id)) continue;
+    seenAssetIds.add(a.id);
+    refs.push({ asset: a, source: "attached_asset" });
+  }
 
   void scene;
-
-  return { charRefs: charRefs.slice(0, 6), styleRefs, ctx };
+  return { refs: refs.slice(0, 10), attachedCharNames };
 }
 
 async function uploadRefToAtlas(asset: Asset): Promise<string | null> {
   if (asset.imageUrl.startsWith("http")) return asset.imageUrl;
   const file = await storageRead(asset.imageKey);
   if (!file) {
-    console.warn(`[v4 generate] could not read asset ${asset.id} for ref upload`);
+    console.warn(`[v4 generate] could not read asset ${asset.id} (${asset.name}) for ref upload`);
     return null;
   }
   const fileName = `${asset.id}.${file.contentType.split("/")[1] ?? "png"}`;
@@ -90,7 +151,7 @@ export type SubmitInput = {
 /**
  * Resolves references, builds the prompt, submits to Atlas, and persists the
  * prediction id on the frame. Does NOT block on completion — the periodic
- * poller (and explicit pollFrame calls) finalize the rendition row.
+ * poller (and explicit syncPending calls) finalize the rendition row.
  */
 export async function submitFrameForGeneration(input: SubmitInput): Promise<void> {
   const frame = await getFrame(input.frameId);
@@ -100,28 +161,41 @@ export async function submitFrameForGeneration(input: SubmitInput): Promise<void
   const story = await getStory(scene.storyId);
   if (!story) throw new Error(`Story ${scene.storyId} not found`);
 
-  const { charRefs, styleRefs, ctx } = await loadAttachedRefs(
+  const { refs, attachedCharNames } = await resolveReferenceAssets(
     scene,
     story.id,
     story.projectId,
   );
-  const attachedCharNames = ctx.characters
-    .filter((c) => charRefs.some((r) => r.asset.characterId === c.id))
-    .map((c) => c.name);
+  const hasStyleRefs = refs.some((r) => r.asset.kind === "style_ref");
 
   const prompt = buildPrompt(
     frame,
     scene,
     story.title,
-    styleRefs.length > 0,
+    hasStyleRefs,
     attachedCharNames,
   );
 
   const refUrls: string[] = [];
-  for (const r of [...charRefs, ...styleRefs].slice(0, 10)) {
+  for (const r of refs) {
     const url = await uploadRefToAtlas(r.asset);
     if (url) refUrls.push(url);
   }
+
+  const refSummary = refs
+    .map((r, i) => {
+      const tag =
+        r.source === "character_primary"
+          ? `char:${r.characterName ?? "?"}`
+          : `attached:${r.asset.kind}`;
+      const ok = i < refUrls.length;
+      return `${tag}=${r.asset.name}${ok ? "" : " (upload failed)"}`;
+    })
+    .join(", ");
+
+  console.log(
+    `[v4 generate] frame=${frame.id} prompt=${prompt.length}ch refs=${refUrls.length}/${refs.length} [${refSummary || "none"}]`,
+  );
 
   const submitted = await atlasSubmit({
     prompt,
@@ -146,7 +220,7 @@ export async function submitFrameForGeneration(input: SubmitInput): Promise<void
   });
 
   console.log(
-    `[v4 generate] frame=${frame.id} submitted prediction=${submitted.predictionId} refs=${refUrls.length} (chars=${charRefs.length}, style=${styleRefs.length})`,
+    `[v4 generate] frame=${frame.id} submitted prediction=${submitted.predictionId}`,
   );
 }
 
@@ -154,7 +228,6 @@ export async function submitFrameForGeneration(input: SubmitInput): Promise<void
  * Polls a single pending frame once. If Atlas reports completed, downloads
  * the image, stores it, creates the rendition, and rotates currentRenditionId
  * / previousRenditionId. Cleans up the third-oldest rendition's file + row.
- * Returns the new status so callers (worker, explicit sync) can log it.
  */
 export async function pollPendingFrame(frameId: string): Promise<Frame["status"] | "no_pending"> {
   const frame = await getFrame(frameId);
