@@ -4,6 +4,7 @@ import { attachmentsRouter } from "./attachments";
 import { charactersRouter } from "./characters";
 import { framesRouter } from "./frames";
 import { projectsRouter } from "./projects";
+import { renditionsRouter } from "./renditions";
 import { scenesRouter } from "./scenes";
 import { storiesRouter } from "./stories";
 import { templatesRouter } from "./templates";
@@ -19,6 +20,7 @@ export const appRouter = router({
   stories: storiesRouter,
   scenes: scenesRouter,
   frames: framesRouter,
+  renditions: renditionsRouter,
 });
 
 export type AppRouter = typeof appRouter;

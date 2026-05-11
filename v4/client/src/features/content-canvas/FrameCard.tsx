@@ -1,4 +1,6 @@
+import { useEffect } from "react";
 import type { Frame } from "../../../../drizzle/schema";
+import { trpc } from "../../lib/trpc";
 
 type Props = {
   frame: Frame;
@@ -16,6 +18,21 @@ const statusColor: Record<Frame["status"], string> = {
 };
 
 export function FrameCard({ frame, isActive, onClick, onDragStart }: Props) {
+  const utils = trpc.useUtils();
+  // Poll while generating so the card flips to ready on completion.
+  useEffect(() => {
+    if (frame.status !== "generating") return;
+    const t = setInterval(() => {
+      utils.frames.listByScene.invalidate({ sceneId: frame.sceneId });
+    }, 5000);
+    return () => clearInterval(t);
+  }, [frame.status, frame.sceneId, utils]);
+
+  const renditionQuery = trpc.renditions.get.useQuery(
+    { id: frame.currentRenditionId ?? "" },
+    { enabled: !!frame.currentRenditionId },
+  );
+
   return (
     <button
       type="button"
@@ -28,10 +45,24 @@ export function FrameCard({ frame, isActive, onClick, onDragStart }: Props) {
           : "border-[var(--border)] hover:border-[var(--border-strong)]"
       }`}
     >
-      <div className="aspect-square overflow-hidden rounded bg-[var(--surface-muted)]">
-        <div className="flex h-full w-full items-center justify-center text-[10px] text-[var(--text-muted)]">
-          {frame.imagePrompt ? "(prompt set)" : "(empty)"}
-        </div>
+      <div className="relative aspect-square overflow-hidden rounded bg-[var(--surface-muted)]">
+        {renditionQuery.data?.imageUrl ? (
+          <img
+            src={renditionQuery.data.imageUrl}
+            alt={frame.textOverlay ?? "frame"}
+            className="h-full w-full object-cover"
+            loading="lazy"
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-[10px] text-[var(--text-muted)]">
+            {frame.imagePrompt ? "(prompt set)" : "(empty)"}
+          </div>
+        )}
+        {frame.status === "generating" && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/30 text-[10px] font-medium uppercase tracking-wide text-white">
+            generating…
+          </div>
+        )}
       </div>
       <div className="mt-2 flex items-center justify-between gap-1">
         <span className="truncate text-xs">
