@@ -297,9 +297,175 @@ export const storiesRouter = router({
     }),
 
   /**
-   * Splits the story's sourceText into scenes + frames using Claude.
-   * Replaces any existing scenes/frames in the target variant.
-   * Returns the count of scenes and frames written, plus model usage.
+   * Runs the splitter (Claude PLAN) and returns the proposed scenes/frames
+   * WITHOUT writing to the DB. The client can show this as an editable
+   * outline before committing.
+   */
+  previewSplit: publicProcedure
+    .input(
+      z.object({
+        storyId: z.string(),
+        sourceText: z.string().optional(),
+        model: z.string().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      if (!process.env.ANTHROPIC_API_KEY) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "ANTHROPIC_API_KEY not set — splitter unavailable.",
+        });
+      }
+      const story = await getStory(input.storyId);
+      if (!story) throw new TRPCError({ code: "NOT_FOUND", message: "Story not found" });
+
+      // Only persist new source text if the caller provided a non-empty value.
+      // An empty/whitespace-only `sourceText` must NEVER overwrite the saved
+      // script — that previously bit a smoke run.
+      let sourceText = (input.sourceText ?? "").trim() || story.sourceText;
+      if (
+        input.sourceText !== undefined &&
+        input.sourceText.trim().length > 0 &&
+        input.sourceText.trim() !== story.sourceText
+      ) {
+        const updated = await updateStory(story.id, { sourceText: input.sourceText });
+        if (updated) sourceText = updated.sourceText;
+      }
+      if (!sourceText.trim()) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Story has no sourceText to split. Paste a script first.",
+        });
+      }
+
+      const project = story.projectId ? await getProject(story.projectId) : undefined;
+      const template = project ? await getTemplate(project.templateId) : undefined;
+      const activePromptIds = project?.activePromptIdsJson ?? {};
+      const prompts: Partial<Record<PromptKey, string>> = {};
+      for (const key of ["plan", "write", "style", "anticipate"] as PromptKey[]) {
+        const revId = activePromptIds[key];
+        if (!revId) continue;
+        const rev = await getPromptRevision(revId);
+        if (rev) prompts[key] = rev.text;
+      }
+      const ctx = await resolveStoryAttachmentContext(story.id, story.projectId);
+
+      try {
+        const result = await splitContent({
+          story,
+          project,
+          template,
+          prompts,
+          sourceText,
+          attachedWorlds: ctx.worlds,
+          attachedCharacters: ctx.characters,
+          attachedStyleAssets: ctx.attachedAssets,
+          model: input.model,
+        });
+        return { scenes: result.scenes, reasoning: result.reasoning, usage: result.usage };
+      } catch (err) {
+        const message = (err as Error).message ?? "Unknown error";
+        if (/401|authentication_error|invalid x-api-key/i.test(message)) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Anthropic rejected the API key.",
+          });
+        }
+        if (/429|rate_limit/i.test(message)) {
+          throw new TRPCError({
+            code: "TOO_MANY_REQUESTS",
+            message: "Anthropic rate-limited. Retry shortly.",
+          });
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Splitter failed: ${message.slice(0, 240)}`,
+        });
+      }
+    }),
+
+  /**
+   * Writes a (potentially user-edited) scene list to the target variant,
+   * replacing whatever was there. The client typically calls this after
+   * previewSplit + manual edits.
+   */
+  applySplit: publicProcedure
+    .input(
+      z.object({
+        storyId: z.string(),
+        variantId: z.string().optional(),
+        scenes: z.array(
+          z.object({
+            title: z.string(),
+            environment: z.string().optional(),
+            environmentLockNotes: z.string().optional(),
+            transitionToNext: z.string().optional(),
+            characters: z.array(z.string()).default([]),
+            frames: z.array(
+              z.object({
+                textOverlay: z.string().optional(),
+                caption: z.string().optional(),
+                imagePrompt: z.string().min(1),
+              }),
+            ),
+          }),
+        ),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const story = await getStory(input.storyId);
+      if (!story) throw new TRPCError({ code: "NOT_FOUND", message: "Story not found" });
+
+      const variant =
+        (input.variantId && (await getStoryVariant(input.variantId))) ||
+        (await getPrimaryVariant(story.id));
+      if (!variant || variant.storyId !== story.id) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Variant not found" });
+      }
+
+      // Drop existing scenes + their frames.
+      const oldScenes = await listScenesForVariant(variant.id);
+      const framesModule = await import("../services/db/frames");
+      for (const s of oldScenes) {
+        const oldFrames = await listFramesForScene(s.id);
+        for (const f of oldFrames) await framesModule.deleteFrame(f.id);
+        await deleteScene(s.id);
+      }
+
+      let sceneCount = 0;
+      let frameCount = 0;
+      for (let si = 0; si < input.scenes.length; si++) {
+        const s = input.scenes[si]!;
+        const scene = await createScene({
+          storyId: story.id,
+          storyVariantId: variant.id,
+          orderIndex: si,
+          title: s.title,
+          environment: s.environment,
+          environmentLockNotes: s.environmentLockNotes,
+          transitionToNext: s.transitionToNext,
+          charactersJson: s.characters.map((rawName) => ({ rawName })),
+        });
+        sceneCount++;
+        for (let fi = 0; fi < s.frames.length; fi++) {
+          const f = s.frames[fi]!;
+          await createFrame({
+            sceneId: scene.id,
+            orderIndex: fi,
+            textOverlay: f.textOverlay,
+            caption: f.caption,
+            imagePrompt: f.imagePrompt,
+          });
+          frameCount++;
+        }
+      }
+
+      return { sceneCount, frameCount };
+    }),
+
+  /**
+   * One-shot convenience: previewSplit + applySplit with no editing in between.
+   * Kept for backward compatibility with the original UI flow.
    */
   split: publicProcedure
     .input(
@@ -314,34 +480,33 @@ export const storiesRouter = router({
       if (!process.env.ANTHROPIC_API_KEY) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "ANTHROPIC_API_KEY not set — splitter unavailable.",
+          message: "ANTHROPIC_API_KEY not set.",
         });
       }
-
       const story = await getStory(input.storyId);
       if (!story) throw new TRPCError({ code: "NOT_FOUND", message: "Story not found" });
 
-      // Persist any new source text the user passed in.
-      let sourceText = input.sourceText?.trim() ?? story.sourceText;
-      if (input.sourceText !== undefined && input.sourceText.trim() !== story.sourceText) {
+      // Same guard as previewSplit — never overwrite saved script with empty.
+      let sourceText = (input.sourceText ?? "").trim() || story.sourceText;
+      if (
+        input.sourceText !== undefined &&
+        input.sourceText.trim().length > 0 &&
+        input.sourceText.trim() !== story.sourceText
+      ) {
         const updated = await updateStory(story.id, { sourceText: input.sourceText });
         if (updated) sourceText = updated.sourceText;
       }
       if (!sourceText.trim()) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Story has no sourceText to split. Paste a script first.",
-        });
+        throw new TRPCError({ code: "BAD_REQUEST", message: "No source text." });
       }
 
       const variant =
         (input.variantId && (await getStoryVariant(input.variantId))) ||
         (await getPrimaryVariant(story.id));
       if (!variant || variant.storyId !== story.id) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Variant not found for this story" });
+        throw new TRPCError({ code: "NOT_FOUND", message: "Variant not found" });
       }
 
-      // Resolve project + template + active prompts (best-effort).
       const project = story.projectId ? await getProject(story.projectId) : undefined;
       const template = project ? await getTemplate(project.templateId) : undefined;
       const activePromptIds = project?.activePromptIdsJson ?? {};
@@ -352,11 +517,8 @@ export const storiesRouter = router({
         const rev = await getPromptRevision(revId);
         if (rev) prompts[key] = rev.text;
       }
-
-      // Resolve attachments (worlds + their characters + style refs).
       const ctx = await resolveStoryAttachmentContext(story.id, story.projectId);
 
-      // Call Claude.
       let result;
       try {
         result = await splitContent({
@@ -371,40 +533,27 @@ export const storiesRouter = router({
           model: input.model,
         });
       } catch (err) {
-        const message = (err as Error).message ?? "Unknown error";
-        const trimmed = message.length > 240 ? `${message.slice(0, 240)}…` : message;
-        if (/401|authentication_error|invalid x-api-key/i.test(message)) {
-          throw new TRPCError({
-            code: "UNAUTHORIZED",
-            message:
-              "Anthropic rejected the API key. Set a valid ANTHROPIC_API_KEY in .env and restart.",
-          });
+        const m = (err as Error).message ?? "Unknown error";
+        if (/401|authentication_error|invalid x-api-key/i.test(m)) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Anthropic rejected the API key." });
         }
-        if (/429|rate_limit/i.test(message)) {
-          throw new TRPCError({
-            code: "TOO_MANY_REQUESTS",
-            message: "Anthropic rate-limited the request. Wait a moment and retry.",
-          });
+        if (/429|rate_limit/i.test(m)) {
+          throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Anthropic rate-limited." });
         }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
-          message: `Splitter failed: ${trimmed}`,
+          message: `Splitter failed: ${m.slice(0, 240)}`,
         });
       }
 
-      // Drop existing scenes (cascading frames go along — they hang off scene_id
-      // which we drop; orphan frames would be unreachable but for tidiness we
-      // delete them too via deleteScene which already nukes the row).
+      const framesModule = await import("../services/db/frames");
       const oldScenes = await listScenesForVariant(variant.id);
       for (const s of oldScenes) {
         const oldFrames = await listFramesForScene(s.id);
-        for (const f of oldFrames) {
-          await import("../services/db/frames").then((m) => m.deleteFrame(f.id));
-        }
+        for (const f of oldFrames) await framesModule.deleteFrame(f.id);
         await deleteScene(s.id);
       }
 
-      // Write new scenes + frames in order.
       let sceneCount = 0;
       let frameCount = 0;
       for (let si = 0; si < result.scenes.length; si++) {
