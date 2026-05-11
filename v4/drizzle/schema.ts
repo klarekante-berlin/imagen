@@ -69,6 +69,11 @@ export const projects = sqliteTable(
     settingsJson: text("settings_json", { mode: "json" }).$type<ProjectSettings>(),
     activePromptIdsJson: text("active_prompt_ids_json", { mode: "json" })
       .$type<ProjectActivePromptIds>(),
+    /** Vision-extracted (or hand-edited) style anchor that's prepended to every
+     * frame's image prompt at generate time. Stories can override. */
+    styleAnchorText: text("style_anchor_text"),
+    styleAnchorStructuredJson: text("style_anchor_structured_json", { mode: "json" }),
+    styleAnchorUpdatedAt: text("style_anchor_updated_at"),
     createdAt: text("created_at").notNull().default(now),
     updatedAt: text("updated_at").notNull().default(now),
   },
@@ -218,6 +223,10 @@ export const stories = sqliteTable(
     status: text("status").$type<StoryStatus>().notNull().default("draft"),
     settingsJson: text("settings_json", { mode: "json" }).$type<ProjectSettings>(),
     worldSnapshotJson: text("world_snapshot_json", { mode: "json" }),
+    /** Optional per-story override. Falls back to project.styleAnchorText. */
+    styleAnchorText: text("style_anchor_text"),
+    styleAnchorStructuredJson: text("style_anchor_structured_json", { mode: "json" }),
+    styleAnchorUpdatedAt: text("style_anchor_updated_at"),
     createdAt: text("created_at").notNull().default(now),
     updatedAt: text("updated_at").notNull().default(now),
   },

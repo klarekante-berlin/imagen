@@ -4,6 +4,7 @@ import { AttachmentBar } from "../features/content-canvas/AttachmentBar";
 import { FrameInspector } from "../features/content-canvas/FrameInspector";
 import { SceneColumn } from "../features/content-canvas/SceneColumn";
 import { ScriptPaste } from "../features/content-canvas/ScriptPaste";
+import { StyleAnchorPanel } from "../features/content-canvas/StyleAnchorPanel";
 import { VariantTabs } from "../features/content-canvas/VariantTabs";
 import { trpc } from "../lib/trpc";
 
@@ -120,6 +121,8 @@ export default function ContentCanvas() {
       />
 
       <AttachmentBar storyId={storyId} />
+
+      <StyleAnchorPanel storyId={storyId} projectId={story.projectId} />
 
       <ScriptPaste
         storyId={storyId}
