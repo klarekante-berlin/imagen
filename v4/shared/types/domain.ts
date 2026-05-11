@@ -1,11 +1,15 @@
 import type {
   AssetKind,
+  AssetVariantKind,
+  AttachmentRef,
+  AttachmentScope,
   CharacterOrigin,
   FrameStatus,
   FrameType,
   JobKind,
   JobStatus,
   PromptKey,
+  StoryKind,
   StoryStatus,
   TemplateKind,
   TransparencyMode,
@@ -71,14 +75,39 @@ export type AssetMetadata = {
   reviewStatus?: "pending" | "approved" | "needs_review";
 };
 
+export type WorldStyleTokens = {
+  artStyle?: string;
+  colorPalette?: string[];
+  typography?: string;
+  notes?: string;
+};
+
+export type AssetVariantBbox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type AssetVariantMetadata = {
+  tagAxes?: TagAxes;
+  tags?: string[];
+  visualDescription?: string;
+  dominantColors?: string[];
+};
+
 export type {
   AssetKind,
+  AssetVariantKind,
+  AttachmentRef,
+  AttachmentScope,
   CharacterOrigin,
   FrameStatus,
   FrameType,
   JobKind,
   JobStatus,
   PromptKey,
+  StoryKind,
   StoryStatus,
   TemplateKind,
   TransparencyMode,

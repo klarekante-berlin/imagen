@@ -1,16 +1,39 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../../_core/db";
 import {
   characters,
   type Character,
   type InsertCharacter,
 } from "../../../drizzle/schema";
+import { listRefIdsForScope } from "./attachments";
 
-export async function listCharacters(projectId: string): Promise<Character[]> {
+export async function listAllCharacters(): Promise<Character[]> {
+  return db.select().from(characters).orderBy(desc(characters.updatedAt));
+}
+
+export async function listCharactersForProject(projectId: string): Promise<Character[]> {
+  const refIds = await listRefIdsForScope("project", projectId, "character");
+  if (refIds.length === 0) return [];
   return db
     .select()
     .from(characters)
-    .where(eq(characters.projectId, projectId))
+    .where(inArray(characters.id, refIds))
+    .orderBy(characters.name);
+}
+
+export async function listCharactersForWorld(worldId: string): Promise<Character[]> {
+  return db
+    .select()
+    .from(characters)
+    .where(eq(characters.worldId, worldId))
+    .orderBy(characters.name);
+}
+
+export async function listFloatingCharacters(): Promise<Character[]> {
+  return db
+    .select()
+    .from(characters)
+    .where(and(isNull(characters.worldId), isNull(characters.projectId)))
     .orderBy(characters.name);
 }
 
@@ -38,16 +61,4 @@ export async function updateCharacter(
 
 export async function deleteCharacter(id: string): Promise<void> {
   await db.delete(characters).where(eq(characters.id, id));
-}
-
-export async function findCharacterByName(
-  projectId: string,
-  name: string,
-): Promise<Character | undefined> {
-  const [row] = await db
-    .select()
-    .from(characters)
-    .where(and(eq(characters.projectId, projectId), eq(characters.name, name)))
-    .limit(1);
-  return row;
 }

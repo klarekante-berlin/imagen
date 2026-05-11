@@ -47,14 +47,34 @@ export type CharacterOrigin = (typeof CHARACTER_ORIGINS)[number];
 export const PROMPT_KEYS = ["plan", "write", "style", "anticipate"] as const;
 export type PromptKey = (typeof PROMPT_KEYS)[number];
 
+export const STORY_KINDS = ["story", "reel", "book", "single"] as const;
+export type StoryKind = (typeof STORY_KINDS)[number];
+
+export const ASSET_VARIANT_KINDS = [
+  "pose",
+  "outfit",
+  "expression",
+  "crop",
+  "other",
+] as const;
+export type AssetVariantKind = (typeof ASSET_VARIANT_KINDS)[number];
+
+export const ATTACHMENT_SCOPES = ["project", "story", "story_variant"] as const;
+export type AttachmentScope = (typeof ATTACHMENT_SCOPES)[number];
+
+export const ATTACHMENT_REFS = ["world", "character", "asset"] as const;
+export type AttachmentRef = (typeof ATTACHMENT_REFS)[number];
+
 export const JOB_KINDS = [
   "embed_asset",
   "embed_rendition",
+  "embed_variant",
   "generate_frame",
   "anticipate_character",
   "quality_check",
   "cleanup_renditions",
   "auto_tag",
+  "categorize_asset",
 ] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 

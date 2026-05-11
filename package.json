@@ -27,7 +27,8 @@
     "v4:generate": "drizzle-kit generate --config v4/drizzle.config.ts",
     "v4:migrate": "drizzle-kit migrate --config v4/drizzle.config.ts",
     "v4:seed": "tsx v4/drizzle/seed.ts",
-    "v4:setup": "pnpm v4:migrate && pnpm v4:seed"
+    "v4:seed:v41": "tsx v4/drizzle/seed-v4.1.ts",
+    "v4:setup": "pnpm v4:migrate && pnpm v4:seed && pnpm v4:seed:v41"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.94.0",

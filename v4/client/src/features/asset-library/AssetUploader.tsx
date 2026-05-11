@@ -4,9 +4,13 @@ import type { AssetKind } from "@v4shared/types/enums";
 import { ASSET_KINDS } from "@v4shared/types/enums";
 
 type Props = {
-  projectId: string;
+  /** When set, the uploaded asset is also attached to this project. */
+  attachToProjectId?: string | null;
+  /** When set, the uploaded asset is linked to this character via FK. */
+  characterId?: string | null;
+  /** When set, the uploaded asset is bound to this world via FK. */
+  worldId?: string | null;
   defaultKind?: AssetKind;
-  defaultCharacterId?: string | null;
   onUploaded?: () => void;
 };
 
@@ -19,9 +23,10 @@ async function fileToBase64(file: File): Promise<{ mime: string; base64: string 
 }
 
 export function AssetUploader({
-  projectId,
+  attachToProjectId = null,
+  characterId = null,
+  worldId = null,
   defaultKind = "character_sheet",
-  defaultCharacterId = null,
   onUploaded,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -52,21 +57,26 @@ export function AssetUploader({
     try {
       const { mime, base64 } = await fileToBase64(file);
       const result = await upload.mutateAsync({
-        projectId,
-        characterId: defaultCharacterId ?? undefined,
         kind,
         name: name.trim(),
         mimeType: mime,
         imageBase64: base64,
         visualDescription: description.trim() || undefined,
+        characterId: characterId ?? undefined,
+        worldId: worldId ?? undefined,
+        attachToProjectId: attachToProjectId ?? undefined,
       });
       setInfo(result.deduplicated ? "Deduplicated to existing asset." : "Uploaded.");
       setName("");
       setDescription("");
       if (inputRef.current) inputRef.current.value = "";
-      utils.assets.listByProject.invalidate({ projectId });
-      if (defaultCharacterId) {
-        utils.assets.listByCharacter.invalidate({ characterId: defaultCharacterId });
+      utils.assets.list.invalidate();
+      if (attachToProjectId) {
+        utils.assets.listByProject.invalidate({ projectId: attachToProjectId });
+      }
+      if (worldId) utils.assets.listByWorld.invalidate({ worldId });
+      if (characterId) {
+        utils.assets.listByCharacter.invalidate({ characterId });
       }
       onUploaded?.();
     } catch (err) {

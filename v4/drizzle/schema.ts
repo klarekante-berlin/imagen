@@ -12,6 +12,11 @@ import { nanoid } from "nanoid";
 import type {
   AssetKind,
   AssetMetadata,
+  AssetVariantBbox,
+  AssetVariantKind,
+  AssetVariantMetadata,
+  AttachmentRef,
+  AttachmentScope,
   CharacterOrigin,
   FrameStatus,
   FrameType,
@@ -23,12 +28,14 @@ import type {
   QcReport,
   RenditionParams,
   SceneCharacterRef,
+  StoryKind,
   StoryStatus,
   TagAxes,
   TemplateDefaults,
   TemplateKind,
   TemplateUiHints,
   TransparencyMode,
+  WorldStyleTokens,
 } from "../shared/types/domain";
 
 const now = sql`(strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))`;
@@ -86,11 +93,28 @@ export const promptRevisions = sqliteTable(
   }),
 );
 
+export const worlds = sqliteTable(
+  "worlds",
+  {
+    id: id(),
+    name: text("name").notNull(),
+    description: text("description"),
+    styleTokensJson: text("style_tokens_json", { mode: "json" })
+      .$type<WorldStyleTokens>(),
+    createdAt: text("created_at").notNull().default(now),
+    updatedAt: text("updated_at").notNull().default(now),
+  },
+  (t) => ({
+    nameIdx: uniqueIndex("worlds_name_idx").on(t.name),
+  }),
+);
+
 export const characters = sqliteTable(
   "characters",
   {
     id: id(),
-    projectId: text("project_id").notNull(),
+    projectId: text("project_id"),
+    worldId: text("world_id"),
     name: text("name").notNull(),
     aliasesJson: text("aliases_json", { mode: "json" }).$type<string[]>(),
     description: text("description"),
@@ -103,7 +127,8 @@ export const characters = sqliteTable(
   },
   (t) => ({
     projectIdx: index("characters_project_idx").on(t.projectId),
-    nameIdx: index("characters_name_idx").on(t.projectId, t.name),
+    worldIdx: index("characters_world_idx").on(t.worldId),
+    nameIdx: index("characters_name_idx").on(t.name),
   }),
 );
 
@@ -112,6 +137,7 @@ export const assets = sqliteTable(
   {
     id: id(),
     projectId: text("project_id"),
+    worldId: text("world_id"),
     characterId: text("character_id"),
     kind: text("kind").$type<AssetKind>().notNull(),
     name: text("name").notNull(),
@@ -129,9 +155,55 @@ export const assets = sqliteTable(
   },
   (t) => ({
     projectIdx: index("assets_project_idx").on(t.projectId),
+    worldIdx: index("assets_world_idx").on(t.worldId),
     characterIdx: index("assets_character_idx").on(t.characterId),
     kindIdx: index("assets_kind_idx").on(t.kind),
     contentHashIdx: uniqueIndex("assets_content_hash_idx").on(t.contentHash),
+  }),
+);
+
+export const assetVariants = sqliteTable(
+  "asset_variants",
+  {
+    id: id(),
+    parentAssetId: text("parent_asset_id").notNull(),
+    kind: text("kind").$type<AssetVariantKind>().notNull(),
+    name: text("name").notNull(),
+    imageKey: text("image_key"),
+    imageUrl: text("image_url"),
+    bboxJson: text("bbox_json", { mode: "json" }).$type<AssetVariantBbox>(),
+    metadataJson: text("metadata_json", { mode: "json" })
+      .$type<AssetVariantMetadata>(),
+    embedding: blob("embedding"),
+    createdAt: text("created_at").notNull().default(now),
+  },
+  (t) => ({
+    parentIdx: index("asset_variants_parent_idx").on(t.parentAssetId),
+    kindIdx: index("asset_variants_kind_idx").on(t.kind),
+  }),
+);
+
+export const attachments = sqliteTable(
+  "attachments",
+  {
+    id: id(),
+    scope: text("scope").$type<AttachmentScope>().notNull(),
+    scopeId: text("scope_id").notNull(),
+    ref: text("ref").$type<AttachmentRef>().notNull(),
+    refId: text("ref_id").notNull(),
+    role: text("role"),
+    orderIndex: integer("order_index").notNull().default(0),
+    createdAt: text("created_at").notNull().default(now),
+  },
+  (t) => ({
+    scopeIdx: index("attachments_scope_idx").on(t.scope, t.scopeId),
+    refIdx: index("attachments_ref_idx").on(t.ref, t.refId),
+    uniqIdx: uniqueIndex("attachments_uniq_idx").on(
+      t.scope,
+      t.scopeId,
+      t.ref,
+      t.refId,
+    ),
   }),
 );
 
@@ -140,6 +212,7 @@ export const stories = sqliteTable(
   {
     id: id(),
     projectId: text("project_id"),
+    kind: text("kind").$type<StoryKind>().notNull().default("story"),
     title: text("title").notNull(),
     sourceText: text("source_text").notNull().default(""),
     status: text("status").$type<StoryStatus>().notNull().default("draft"),
@@ -151,7 +224,24 @@ export const stories = sqliteTable(
   (t) => ({
     projectIdx: index("stories_project_idx").on(t.projectId),
     statusIdx: index("stories_status_idx").on(t.status),
+    kindIdx: index("stories_kind_idx").on(t.kind),
     createdAtIdx: index("stories_created_at_idx").on(t.createdAt),
+  }),
+);
+
+export const storyVariants = sqliteTable(
+  "story_variants",
+  {
+    id: id(),
+    storyId: text("story_id").notNull(),
+    name: text("name").notNull().default("v1"),
+    notes: text("notes"),
+    isPrimary: integer("is_primary", { mode: "boolean" }).notNull().default(true),
+    createdAt: text("created_at").notNull().default(now),
+    updatedAt: text("updated_at").notNull().default(now),
+  },
+  (t) => ({
+    storyIdx: index("story_variants_story_idx").on(t.storyId),
   }),
 );
 
@@ -160,6 +250,7 @@ export const scenes = sqliteTable(
   {
     id: id(),
     storyId: text("story_id").notNull(),
+    storyVariantId: text("story_variant_id"),
     orderIndex: integer("order_index").notNull(),
     title: text("title"),
     environment: text("environment"),
@@ -174,6 +265,7 @@ export const scenes = sqliteTable(
   },
   (t) => ({
     storyOrderIdx: index("scenes_story_order_idx").on(t.storyId, t.orderIndex),
+    variantIdx: index("scenes_variant_idx").on(t.storyVariantId),
   }),
 );
 
@@ -251,12 +343,20 @@ export type Project = typeof projects.$inferSelect;
 export type InsertProject = typeof projects.$inferInsert;
 export type PromptRevision = typeof promptRevisions.$inferSelect;
 export type InsertPromptRevision = typeof promptRevisions.$inferInsert;
+export type World = typeof worlds.$inferSelect;
+export type InsertWorld = typeof worlds.$inferInsert;
 export type Character = typeof characters.$inferSelect;
 export type InsertCharacter = typeof characters.$inferInsert;
 export type Asset = typeof assets.$inferSelect;
 export type InsertAsset = typeof assets.$inferInsert;
+export type AssetVariant = typeof assetVariants.$inferSelect;
+export type InsertAssetVariant = typeof assetVariants.$inferInsert;
+export type Attachment = typeof attachments.$inferSelect;
+export type InsertAttachment = typeof attachments.$inferInsert;
 export type Story = typeof stories.$inferSelect;
 export type InsertStory = typeof stories.$inferInsert;
+export type StoryVariant = typeof storyVariants.$inferSelect;
+export type InsertStoryVariant = typeof storyVariants.$inferInsert;
 export type Scene = typeof scenes.$inferSelect;
 export type InsertScene = typeof scenes.$inferInsert;
 export type Frame = typeof frames.$inferSelect;
