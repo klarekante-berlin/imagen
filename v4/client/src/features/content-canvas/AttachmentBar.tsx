@@ -20,9 +20,12 @@ export function AttachmentBar({ storyId }: Props) {
     kinds: ["style_ref", "environment", "prop"],
   });
   const utils = trpc.useUtils();
+  const invalidateAttachments = () => {
+    utils.attachments.listByScope.invalidate({ scope: "story", scopeId: storyId });
+    utils.stories.previewReferenceAssets.invalidate({ storyId });
+  };
   const detach = trpc.attachments.detach.useMutation({
-    onSuccess: () =>
-      utils.attachments.listByScope.invalidate({ scope: "story", scopeId: storyId }),
+    onSuccess: invalidateAttachments,
   });
 
   const [pickerOpen, setPickerOpen] = useState(false);

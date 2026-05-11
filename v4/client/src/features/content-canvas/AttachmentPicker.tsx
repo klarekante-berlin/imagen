@@ -20,8 +20,10 @@ export function AttachmentPicker({ storyId, attachedRefIds, onClose }: Props) {
 
   const utils = trpc.useUtils();
   const attach = trpc.attachments.attach.useMutation({
-    onSuccess: () =>
-      utils.attachments.listByScope.invalidate({ scope: "story", scopeId: storyId }),
+    onSuccess: () => {
+      utils.attachments.listByScope.invalidate({ scope: "story", scopeId: storyId });
+      utils.stories.previewReferenceAssets.invalidate({ storyId });
+    },
   });
 
   const items = useMemo(() => {
