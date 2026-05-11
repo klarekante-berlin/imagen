@@ -36,7 +36,24 @@ async function run() {
       const longest = Math.max(meta?.width ?? 0, meta?.height ?? 0);
       const isJpeg = meta?.format === "jpeg";
       if (isJpeg && longest <= MAX_DIM && file.buffer.byteLength <= MAX_BYTES) {
-        console.log(`  · ${a.name}: already small (${meta?.width}×${meta?.height}, ${file.buffer.byteLength} bytes), skip`);
+        // Already small — just make sure metadataJson has dimensions/bytes.
+        if (!a.metadataJson?.width || !a.metadataJson?.height || !a.metadataJson?.bytes) {
+          await db
+            .update(assets)
+            .set({
+              metadataJson: {
+                ...(a.metadataJson ?? {}),
+                width: meta?.width,
+                height: meta?.height,
+                bytes: file.buffer.byteLength,
+              },
+              updatedAt: new Date().toISOString(),
+            })
+            .where(eq(assets.id, a.id));
+          console.log(`  · ${a.name}: backfilled metadata only`);
+        } else {
+          console.log(`  · ${a.name}: already small + metadata complete, skip`);
+        }
         skipped++;
         continue;
       }
@@ -53,6 +70,12 @@ async function run() {
           imageKey: stored.key,
           imageUrl: stored.url,
           contentHash: hashBuffer(norm.buffer),
+          metadataJson: {
+            ...(a.metadataJson ?? {}),
+            width: norm.width,
+            height: norm.height,
+            bytes: norm.finalBytes,
+          },
           updatedAt: new Date().toISOString(),
         })
         .where(eq(assets.id, a.id));

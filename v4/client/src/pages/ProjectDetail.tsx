@@ -3,9 +3,13 @@ import { Link, useRoute } from "wouter";
 import type { Character } from "../../../drizzle/schema";
 import { AssetGrid } from "../features/asset-library/AssetGrid";
 import { AssetSearch } from "../features/asset-library/AssetSearch";
-import { AssetUploader } from "../features/asset-library/AssetUploader";
+import {
+  AssetDropZone,
+  AssetUploader,
+} from "../features/asset-library/AssetUploader";
 import { CharacterList } from "../features/character-studio/CharacterList";
 import { StoryList } from "../features/content-canvas/StoryList";
+import { ProjectHeader } from "../features/project/ProjectHeader";
 import { trpc } from "../lib/trpc";
 
 type Tab = "contents" | "library" | "characters";
@@ -32,9 +36,11 @@ export default function ProjectDetail() {
         <Link href="/" className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]">
           ← All projects
         </Link>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">{project.data.name}</h1>
-        <div className="mt-1 text-sm text-[var(--text-muted)]">
-          Template: {template.data?.name ?? project.data.templateId}
+        <div className="mt-1">
+          <ProjectHeader
+            project={project.data}
+            templateName={template.data?.name ?? project.data.templateId}
+          />
         </div>
       </div>
 
@@ -64,9 +70,13 @@ export default function ProjectDetail() {
 
       {tab === "library" && (
         <div className="space-y-4">
-          <AssetUploader attachToProjectId={projectId} />
-          <AssetSearch projectId={projectId} />
-          <AssetGrid projectId={projectId} />
+          <div className="flex items-center justify-between gap-3">
+            <AssetSearch projectId={projectId} />
+            <AssetUploader attachToProjectId={projectId} compact />
+          </div>
+          <AssetDropZone attachToProjectId={projectId}>
+            <AssetGrid projectId={projectId} />
+          </AssetDropZone>
         </div>
       )}
 
@@ -80,20 +90,24 @@ export default function ProjectDetail() {
           <div className="space-y-4">
             {focusedCharacter ? (
               <>
-                <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-                  <h3 className="text-sm font-medium">{focusedCharacter.name}</h3>
-                  {focusedCharacter.description && (
-                    <p className="mt-1 text-xs text-[var(--text-muted)]">
-                      {focusedCharacter.description}
-                    </p>
-                  )}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-medium">
+                    {focusedCharacter.name}'s sheets
+                  </div>
+                  <AssetUploader
+                    attachToProjectId={projectId}
+                    defaultKind="character_sheet"
+                    characterId={focusedCharacter.id}
+                    compact
+                  />
                 </div>
-                <AssetUploader
+                <AssetDropZone
                   attachToProjectId={projectId}
-                  defaultKind="character_sheet"
                   characterId={focusedCharacter.id}
-                />
-                <AssetGrid projectId={projectId} characterId={focusedCharacter.id} />
+                  defaultKind="character_sheet"
+                >
+                  <AssetGrid projectId={projectId} characterId={focusedCharacter.id} />
+                </AssetDropZone>
               </>
             ) : (
               <div className="rounded-md border border-dashed border-[var(--border)] p-8 text-sm text-[var(--text-muted)]">

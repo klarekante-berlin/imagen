@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { AssetGridGlobal } from "../features/asset-library/AssetGridGlobal";
-import { AssetUploader } from "../features/asset-library/AssetUploader";
+import {
+  AssetDropZone,
+  AssetUploader,
+} from "../features/asset-library/AssetUploader";
 import type { AssetKind } from "@v4shared/types/enums";
 import { ASSET_KINDS } from "@v4shared/types/enums";
 
@@ -8,19 +11,20 @@ export default function Library() {
   const [kindFilter, setKindFilter] = useState<AssetKind | "all">("all");
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Library</h1>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Global pool of character sheets, environments, style references and props.
-          Assets can be attached to projects, worlds, or characters from here.
-        </p>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Library</h1>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">
+            Global pool. Drag images anywhere on this page to upload, or use{" "}
+            <strong>+ Upload asset</strong>. Click a card to edit details.
+          </p>
+        </div>
+        <AssetUploader compact />
       </div>
 
-      <AssetUploader />
-
-      <div className="flex items-center gap-3">
-        <span className="text-xs text-[var(--text-muted)]">Kind:</span>
+      <div className="flex items-center gap-3 text-xs">
+        <span className="text-[var(--text-muted)]">Kind:</span>
         <select
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value as AssetKind | "all")}
@@ -35,7 +39,9 @@ export default function Library() {
         </select>
       </div>
 
-      <AssetGridGlobal kinds={kindFilter === "all" ? undefined : [kindFilter]} />
+      <AssetDropZone>
+        <AssetGridGlobal kinds={kindFilter === "all" ? undefined : [kindFilter]} />
+      </AssetDropZone>
     </div>
   );
 }

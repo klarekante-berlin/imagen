@@ -167,14 +167,38 @@ export function SceneColumn({
         {dragOverIdx === frames.length && (
           <div className="h-1 rounded bg-[var(--accent)]" />
         )}
-        <button
-          type="button"
-          onClick={() => addFrame.mutate({ sceneId: scene.id })}
-          disabled={addFrame.isPending}
-          className="rounded-md border border-dashed border-[var(--border)] py-2 text-xs text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)] disabled:opacity-50"
-        >
-          + Frame
-        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              const last = frames[frames.length - 1];
+              addFrame.mutate({
+                sceneId: scene.id,
+                cloneFromFrameId: last?.id,
+              });
+            }}
+            disabled={addFrame.isPending}
+            title={
+              frames.length > 0
+                ? "Add a frame pre-filled from the last one"
+                : "Add an empty frame"
+            }
+            className="flex-1 rounded-md border border-dashed border-[var(--border)] py-2 text-xs text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)] disabled:opacity-50"
+          >
+            {frames.length > 0 ? "+ Frame (clone last)" : "+ Frame"}
+          </button>
+          {frames.length > 0 && (
+            <button
+              type="button"
+              onClick={() => addFrame.mutate({ sceneId: scene.id })}
+              disabled={addFrame.isPending}
+              title="Add an empty frame"
+              className="rounded-md border border-dashed border-[var(--border)] px-2 py-2 text-xs text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)] disabled:opacity-50"
+            >
+              empty
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

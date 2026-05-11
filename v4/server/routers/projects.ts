@@ -34,6 +34,21 @@ export const projectsRouter = router({
     .input(z.object({ id: z.string() }))
     .query(({ input }) => getProject(input.id)),
 
+  update: publicProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        name: z.string().min(1).max(120).optional(),
+        description: z.string().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const { id, ...patch } = input;
+      const updated = await updateProject(id, patch);
+      if (!updated) throw new TRPCError({ code: "NOT_FOUND" });
+      return updated;
+    }),
+
   create: publicProcedure
     .input(
       z.object({
