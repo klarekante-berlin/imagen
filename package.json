@@ -28,6 +28,7 @@
     "v4:migrate": "drizzle-kit migrate --config v4/drizzle.config.ts",
     "v4:seed": "tsx v4/drizzle/seed.ts",
     "v4:seed:v41": "tsx v4/drizzle/seed-v4.1.ts",
+    "v4:normalize-assets": "tsx v4/scripts/normalize-existing-assets.ts",
     "v4:setup": "pnpm v4:migrate && pnpm v4:seed && pnpm v4:seed:v41"
   },
   "dependencies": {
