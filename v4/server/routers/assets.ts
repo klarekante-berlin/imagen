@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { ASSET_KINDS, type AssetKind } from "../../shared/types/enums";
+import { toPublicAsset } from "../../shared/types/asset-view";
 import { publicProcedure, router } from "../_core/trpc";
 import { embedImageWithText, embedText } from "../services/ai/voyage";
 import {
@@ -8,11 +9,15 @@ import {
   deleteAsset,
   getAsset,
   getAssetByContentHash,
+  listAllAssets,
   listAssetsForCharacter,
   listAssetsForProject,
+  listAssetsForWorld,
   searchAssetsByEmbedding,
   setAssetEmbedding,
+  updateAsset,
 } from "../services/db/assets";
+import { attach, detachAllForRef } from "../services/db/attachments";
 import { storageDelete, storagePut } from "../services/storage";
 
 const base64Image = z
@@ -43,6 +48,17 @@ async function safeEmbed(
 }
 
 export const assetsRouter = router({
+  list: publicProcedure
+    .input(
+      z.object({
+        kinds: z.array(z.enum(ASSET_KINDS)).optional(),
+      }).optional(),
+    )
+    .query(async ({ input }) => {
+      const rows = await listAllAssets(input?.kinds);
+      return rows.map(toPublicAsset);
+    }),
+
   listByProject: publicProcedure
     .input(
       z.object({
@@ -50,27 +66,49 @@ export const assetsRouter = router({
         kinds: z.array(z.enum(ASSET_KINDS)).optional(),
       }),
     )
-    .query(({ input }) => listAssetsForProject(input.projectId, input.kinds)),
+    .query(async ({ input }) => {
+      const rows = await listAssetsForProject(input.projectId, input.kinds);
+      return rows.map(toPublicAsset);
+    }),
+
+  listByWorld: publicProcedure
+    .input(
+      z.object({
+        worldId: z.string(),
+        kinds: z.array(z.enum(ASSET_KINDS)).optional(),
+      }),
+    )
+    .query(async ({ input }) => {
+      const rows = await listAssetsForWorld(input.worldId, input.kinds);
+      return rows.map(toPublicAsset);
+    }),
 
   listByCharacter: publicProcedure
     .input(z.object({ characterId: z.string() }))
-    .query(({ input }) => listAssetsForCharacter(input.characterId)),
+    .query(async ({ input }) => {
+      const rows = await listAssetsForCharacter(input.characterId);
+      return rows.map(toPublicAsset);
+    }),
 
   get: publicProcedure
     .input(z.object({ id: z.string() }))
-    .query(({ input }) => getAsset(input.id)),
+    .query(async ({ input }) => {
+      const row = await getAsset(input.id);
+      return row ? toPublicAsset(row) : undefined;
+    }),
 
   uploadBase64: publicProcedure
     .input(
       z.object({
-        projectId: z.string(),
-        characterId: z.string().optional(),
         kind: z.enum(ASSET_KINDS),
         name: z.string().min(1).max(160),
         mimeType: z.string().default("image/png"),
         imageBase64: base64Image,
         visualDescription: z.string().optional(),
         tags: z.array(z.string()).optional(),
+        characterId: z.string().optional(),
+        worldId: z.string().optional(),
+        attachToProjectId: z.string().optional(),
       }),
     )
     .mutation(async ({ input }) => {
@@ -82,20 +120,33 @@ export const assetsRouter = router({
       const ext = fileExtFor(input.mimeType);
       const safeName = input.name.replace(/[^a-z0-9_-]+/gi, "-").toLowerCase();
       const stored = await storagePut(
-        `projects/${input.projectId}/${input.kind}/${safeName}.${ext}`,
+        `library/${input.kind}/${safeName}.${ext}`,
         buffer,
       );
 
       const existing = await getAssetByContentHash(stored.contentHash);
       if (existing) {
-        // Drop the freshly-written duplicate file; keep the canonical row.
         await storageDelete(stored.key);
-        return { asset: existing, deduplicated: true };
+        const patch: Parameters<typeof updateAsset>[1] = {};
+        if (!existing.characterId && input.characterId) patch.characterId = input.characterId;
+        if (!existing.worldId && input.worldId) patch.worldId = input.worldId;
+        const linked = Object.keys(patch).length > 0
+          ? await updateAsset(existing.id, patch)
+          : existing;
+        if (input.attachToProjectId) {
+          await attach({
+            scope: "project",
+            scopeId: input.attachToProjectId,
+            ref: "asset",
+            refId: existing.id,
+          });
+        }
+        return { asset: toPublicAsset(linked ?? existing), deduplicated: true };
       }
 
       const asset = await createAsset({
-        projectId: input.projectId,
         characterId: input.characterId,
+        worldId: input.worldId,
         kind: input.kind,
         name: input.name,
         imageKey: stored.key,
@@ -105,15 +156,29 @@ export const assetsRouter = router({
         tagsJson: input.tags,
       });
 
+      if (input.attachToProjectId) {
+        await attach({
+          scope: "project",
+          scopeId: input.attachToProjectId,
+          ref: "asset",
+          refId: asset.id,
+        });
+      }
+
       const embedding = await safeEmbed(
         input.imageBase64,
         [input.name, input.visualDescription ?? "", (input.tags ?? []).join(", ")]
           .filter(Boolean)
           .join(". "),
       );
-      if (embedding) await setAssetEmbedding(asset.id, embedding);
+      let finalAsset = asset;
+      if (embedding) {
+        await setAssetEmbedding(asset.id, embedding);
+        const refreshed = await getAsset(asset.id);
+        if (refreshed) finalAsset = refreshed;
+      }
 
-      return { asset, deduplicated: false };
+      return { asset: toPublicAsset(finalAsset), deduplicated: false };
     }),
 
   update: publicProcedure
@@ -124,16 +189,18 @@ export const assetsRouter = router({
         visualDescription: z.string().optional(),
         tags: z.array(z.string()).optional(),
         characterId: z.string().nullable().optional(),
+        worldId: z.string().nullable().optional(),
       }),
     )
     .mutation(async ({ input }) => {
       const { id, tags, ...rest } = input;
       const asset = await getAsset(id);
       if (!asset) throw new TRPCError({ code: "NOT_FOUND" });
-      const updated = await import("../services/db/assets").then((m) =>
-        m.updateAsset(id, { ...rest, tagsJson: tags ?? asset.tagsJson ?? undefined }),
-      );
-      return updated;
+      const updated = await updateAsset(id, {
+        ...rest,
+        tagsJson: tags ?? asset.tagsJson ?? undefined,
+      });
+      return updated ? toPublicAsset(updated) : undefined;
     }),
 
   delete: publicProcedure
@@ -141,15 +208,17 @@ export const assetsRouter = router({
     .mutation(async ({ input }) => {
       const removed = await deleteAsset(input.id);
       if (removed?.imageKey) await storageDelete(removed.imageKey);
+      if (removed) await detachAllForRef("asset", removed.id);
       return { ok: true };
     }),
 
   search: publicProcedure
     .input(
       z.object({
-        projectId: z.string(),
         query: z.string().min(1).max(500),
         topK: z.number().int().min(1).max(50).default(10),
+        projectId: z.string().optional(),
+        worldId: z.string().optional(),
         kinds: z.array(z.enum(ASSET_KINDS)).optional(),
       }),
     )
@@ -169,13 +238,11 @@ export const assetsRouter = router({
           message: `Voyage embedding failed: ${(err as Error).message.slice(0, 200)}`,
         });
       }
-      const kinds = input.kinds as AssetKind[] | undefined;
-      const hits = await searchAssetsByEmbedding(
-        input.projectId,
-        queryEmbedding,
-        input.topK,
-        kinds,
-      );
-      return hits.map((h) => ({ ...h.asset, score: h.score }));
+      const hits = await searchAssetsByEmbedding(queryEmbedding, input.topK, {
+        projectId: input.projectId,
+        worldId: input.worldId,
+        kinds: input.kinds as AssetKind[] | undefined,
+      });
+      return hits.map((h) => ({ ...toPublicAsset(h.asset), score: h.score }));
     }),
 });

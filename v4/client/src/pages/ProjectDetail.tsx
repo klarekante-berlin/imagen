@@ -61,7 +61,7 @@ export default function ProjectDetail() {
 
       {tab === "library" && (
         <div className="space-y-4">
-          <AssetUploader projectId={projectId} />
+          <AssetUploader attachToProjectId={projectId} />
           <AssetSearch projectId={projectId} />
           <AssetGrid projectId={projectId} />
         </div>
@@ -86,9 +86,9 @@ export default function ProjectDetail() {
                   )}
                 </div>
                 <AssetUploader
-                  projectId={projectId}
+                  attachToProjectId={projectId}
                   defaultKind="character_sheet"
-                  defaultCharacterId={focusedCharacter.id}
+                  characterId={focusedCharacter.id}
                 />
                 <AssetGrid projectId={projectId} characterId={focusedCharacter.id} />
               </>

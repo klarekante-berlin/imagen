@@ -1,29 +1,53 @@
 import { useState } from "react";
 import { trpc } from "../../lib/trpc";
-import type { Character } from "../../../../drizzle/schema";
+import type { Character, World } from "../../../../drizzle/schema";
 
 type Props = {
-  projectId: string;
+  /** When set, listing is scoped via attachments and creates auto-attach to this project. */
+  projectId?: string;
+  /** When set, listing is scoped via FK and creates set world_id directly. */
+  worldId?: string;
   onSelect?: (character: Character) => void;
   selectedId?: string | null;
 };
 
-export function CharacterList({ projectId, onSelect, selectedId }: Props) {
-  const list = trpc.characters.listByProject.useQuery({ projectId });
+export function CharacterList({ projectId, worldId, onSelect, selectedId }: Props) {
+  const projectQuery = trpc.characters.listByProject.useQuery(
+    { projectId: projectId ?? "" },
+    { enabled: !!projectId },
+  );
+  const worldQuery = trpc.characters.listByWorld.useQuery(
+    { worldId: worldId ?? "" },
+    { enabled: !!worldId },
+  );
+  const allQuery = trpc.characters.list.useQuery(undefined, {
+    enabled: !projectId && !worldId,
+  });
+  const worldsQuery = trpc.worlds.list.useQuery();
+
+  const list = projectId ? projectQuery : worldId ? worldQuery : allQuery;
+
   const utils = trpc.useUtils();
+  const invalidate = () => {
+    if (projectId) utils.characters.listByProject.invalidate({ projectId });
+    if (worldId) utils.characters.listByWorld.invalidate({ worldId });
+    utils.characters.list.invalidate();
+    utils.characters.listFloating.invalidate();
+  };
   const create = trpc.characters.create.useMutation({
     onSuccess: () => {
-      utils.characters.listByProject.invalidate({ projectId });
+      invalidate();
       setName("");
       setDescription("");
     },
   });
-  const remove = trpc.characters.delete.useMutation({
-    onSuccess: () => utils.characters.listByProject.invalidate({ projectId }),
-  });
+  const remove = trpc.characters.delete.useMutation({ onSuccess: invalidate });
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [pickedWorldId, setPickedWorldId] = useState<string>("");
+
+  const worlds: World[] = worldsQuery.data ?? [];
 
   return (
     <div className="space-y-4">
@@ -33,9 +57,10 @@ export function CharacterList({ projectId, onSelect, selectedId }: Props) {
           e.preventDefault();
           if (!name.trim()) return;
           create.mutate({
-            projectId,
             name: name.trim(),
             description: description.trim() || undefined,
+            worldId: worldId ?? (pickedWorldId || undefined),
+            attachToProjectId: projectId ?? undefined,
           });
         }}
       >
@@ -53,6 +78,20 @@ export function CharacterList({ projectId, onSelect, selectedId }: Props) {
             placeholder="Short description (optional)"
             className="rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm"
           />
+          {!worldId && !projectId && (
+            <select
+              value={pickedWorldId}
+              onChange={(e) => setPickedWorldId(e.target.value)}
+              className="rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm sm:col-span-2"
+            >
+              <option value="">— no world (floating) —</option>
+              {worlds.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
         <button
           type="submit"
@@ -90,6 +129,11 @@ export function CharacterList({ projectId, onSelect, selectedId }: Props) {
               </div>
               {c.description && (
                 <div className="mt-1 text-xs text-[var(--text-muted)]">{c.description}</div>
+              )}
+              {c.worldId && (
+                <div className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  World: {worlds.find((w) => w.id === c.worldId)?.name ?? "—"}
+                </div>
               )}
               <button
                 type="button"

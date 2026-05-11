@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import { db } from "../../_core/db";
 import {
   assets,
@@ -7,20 +7,42 @@ import {
 } from "../../../drizzle/schema";
 import type { AssetKind } from "../../../shared/types/enums";
 import { bufferToF32, cosineSimilarity } from "../ai/voyage";
+import { listRefIdsForScope } from "./attachments";
+
+export async function listAllAssets(kinds?: AssetKind[]): Promise<Asset[]> {
+  const cond = kinds && kinds.length > 0 ? inArray(assets.kind, kinds) : undefined;
+  const q = db.select().from(assets).orderBy(desc(assets.createdAt));
+  return cond ? q.where(cond) : q;
+}
 
 export async function listAssetsForProject(
   projectId: string,
   kinds?: AssetKind[],
 ): Promise<Asset[]> {
-  const projectFilter = eq(assets.projectId, projectId);
+  const refIds = await listRefIdsForScope("project", projectId, "asset");
+  if (refIds.length === 0) return [];
   const cond = kinds && kinds.length > 0
-    ? and(projectFilter, inArray(assets.kind, kinds))
-    : projectFilter;
-  return db.select().from(assets).where(cond);
+    ? and(inArray(assets.id, refIds), inArray(assets.kind, kinds))
+    : inArray(assets.id, refIds);
+  return db.select().from(assets).where(cond).orderBy(desc(assets.createdAt));
+}
+
+export async function listAssetsForWorld(
+  worldId: string,
+  kinds?: AssetKind[],
+): Promise<Asset[]> {
+  const cond = kinds && kinds.length > 0
+    ? and(eq(assets.worldId, worldId), inArray(assets.kind, kinds))
+    : eq(assets.worldId, worldId);
+  return db.select().from(assets).where(cond).orderBy(desc(assets.createdAt));
 }
 
 export async function listAssetsForCharacter(characterId: string): Promise<Asset[]> {
-  return db.select().from(assets).where(eq(assets.characterId, characterId));
+  return db
+    .select()
+    .from(assets)
+    .where(eq(assets.characterId, characterId))
+    .orderBy(desc(assets.createdAt));
 }
 
 export async function getAsset(id: string): Promise<Asset | undefined> {
@@ -66,26 +88,37 @@ export async function deleteAsset(id: string): Promise<Asset | undefined> {
   return row;
 }
 
-export async function listAssetsMissingEmbeddings(projectId?: string): Promise<Asset[]> {
-  const cond = projectId
-    ? and(eq(assets.projectId, projectId), isNull(assets.embedding))
-    : isNull(assets.embedding);
-  return db.select().from(assets).where(cond);
-}
-
 /**
- * In-memory cosine search across project assets. Fine for libraries up to a
- * few thousand sheets; revisit with vector_top_k when Turso is in play.
+ * In-memory cosine search. Optional projectId scopes via attachments,
+ * worldId via FK, kinds via column. Fine for libraries up to a few thousand
+ * sheets; revisit with vector_top_k when Turso is in play.
  */
 export async function searchAssetsByEmbedding(
-  projectId: string,
   queryEmbedding: Buffer,
   topK = 10,
-  kinds?: AssetKind[],
+  filters?: {
+    projectId?: string;
+    worldId?: string;
+    kinds?: AssetKind[];
+  },
 ): Promise<Array<{ asset: Asset; score: number }>> {
-  const baseCond = and(eq(assets.projectId, projectId), isNotNull(assets.embedding));
-  const cond = kinds && kinds.length > 0 ? and(baseCond, inArray(assets.kind, kinds)) : baseCond;
-  const rows = await db.select().from(assets).where(cond);
+  const wheres = [isNotNull(assets.embedding)];
+
+  if (filters?.projectId) {
+    const refIds = await listRefIdsForScope("project", filters.projectId, "asset");
+    if (refIds.length === 0) return [];
+    wheres.push(inArray(assets.id, refIds));
+  }
+  if (filters?.worldId) wheres.push(eq(assets.worldId, filters.worldId));
+  if (filters?.kinds && filters.kinds.length > 0) {
+    wheres.push(inArray(assets.kind, filters.kinds));
+  }
+
+  const rows = await db
+    .select()
+    .from(assets)
+    .where(and(...wheres));
+
   const q = bufferToF32(queryEmbedding);
   const scored = rows.map((asset) => ({
     asset,

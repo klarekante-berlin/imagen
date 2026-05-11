@@ -2,18 +2,30 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { CHARACTER_ORIGINS } from "../../shared/types/enums";
 import { publicProcedure, router } from "../_core/trpc";
+import { attach, detachAllForRef } from "../services/db/attachments";
 import {
   createCharacter,
   deleteCharacter,
   getCharacter,
-  listCharacters,
+  listAllCharacters,
+  listCharactersForProject,
+  listCharactersForWorld,
+  listFloatingCharacters,
   updateCharacter,
 } from "../services/db/characters";
 
 export const charactersRouter = router({
+  list: publicProcedure.query(() => listAllCharacters()),
+
   listByProject: publicProcedure
     .input(z.object({ projectId: z.string() }))
-    .query(({ input }) => listCharacters(input.projectId)),
+    .query(({ input }) => listCharactersForProject(input.projectId)),
+
+  listByWorld: publicProcedure
+    .input(z.object({ worldId: z.string() }))
+    .query(({ input }) => listCharactersForWorld(input.worldId)),
+
+  listFloating: publicProcedure.query(() => listFloatingCharacters()),
 
   get: publicProcedure
     .input(z.object({ id: z.string() }))
@@ -22,24 +34,34 @@ export const charactersRouter = router({
   create: publicProcedure
     .input(
       z.object({
-        projectId: z.string(),
         name: z.string().min(1).max(120),
         description: z.string().optional(),
         persona: z.string().optional(),
         aliasesJson: z.array(z.string()).optional(),
         origin: z.enum(CHARACTER_ORIGINS).optional(),
+        worldId: z.string().optional(),
+        attachToProjectId: z.string().optional(),
       }),
     )
-    .mutation(({ input }) =>
-      createCharacter({
-        projectId: input.projectId,
+    .mutation(async ({ input }) => {
+      const character = await createCharacter({
         name: input.name,
         description: input.description,
         persona: input.persona,
         aliasesJson: input.aliasesJson,
         origin: input.origin ?? "user",
-      }),
-    ),
+        worldId: input.worldId,
+      });
+      if (input.attachToProjectId) {
+        await attach({
+          scope: "project",
+          scopeId: input.attachToProjectId,
+          ref: "character",
+          refId: character.id,
+        });
+      }
+      return character;
+    }),
 
   update: publicProcedure
     .input(
@@ -50,6 +72,7 @@ export const charactersRouter = router({
         persona: z.string().optional(),
         aliasesJson: z.array(z.string()).optional(),
         primaryAssetId: z.string().nullable().optional(),
+        worldId: z.string().nullable().optional(),
       }),
     )
     .mutation(async ({ input }) => {
@@ -63,6 +86,7 @@ export const charactersRouter = router({
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input }) => {
       await deleteCharacter(input.id);
+      await detachAllForRef("character", input.id);
       return { ok: true };
     }),
 });
