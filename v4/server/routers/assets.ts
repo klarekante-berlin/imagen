@@ -19,19 +19,15 @@ import {
 } from "../services/db/assets";
 import { attach, detachAllForRef } from "../services/db/attachments";
 import { storageDelete, storagePut } from "../services/storage";
+import { normalizeImageForRef } from "../services/storage/normalize-image";
 
 const base64Image = z
   .string()
   .min(20)
   .regex(/^[A-Za-z0-9+/=]+$/, "Must be raw base64 (no data URL prefix)");
 
-const fileExtFor = (mime: string): string => {
-  if (mime === "image/png") return "png";
-  if (mime === "image/jpeg" || mime === "image/jpg") return "jpg";
-  if (mime === "image/webp") return "webp";
-  if (mime === "image/gif") return "gif";
-  return "bin";
-};
+// fileExtFor no longer used now that uploads always normalize to .jpg, but
+// keeping the import surface stable for any external callers.
 
 async function safeEmbed(
   imageBase64: string | null,
@@ -112,15 +108,30 @@ export const assetsRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      const buffer = Buffer.from(input.imageBase64, "base64");
-      if (buffer.byteLength === 0) {
+      const rawBuffer = Buffer.from(input.imageBase64, "base64");
+      if (rawBuffer.byteLength === 0) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Empty file" });
       }
 
-      const ext = fileExtFor(input.mimeType);
+      // Normalize every upload: longest side ≤ 1536, JPEG q85, EXIF-rotated.
+      // Cuts payload to Atlas + Claude vision and keeps the on-disk store tidy.
+      let normalized;
+      try {
+        normalized = await normalizeImageForRef(rawBuffer);
+      } catch (err) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Could not decode image: ${(err as Error).message.slice(0, 200)}`,
+        });
+      }
+      const buffer = normalized.buffer;
+      console.log(
+        `[v4 upload] ${input.name}: ${rawBuffer.byteLength} → ${buffer.byteLength} bytes (${normalized.width}×${normalized.height} jpeg)`,
+      );
+
       const safeName = input.name.replace(/[^a-z0-9_-]+/gi, "-").toLowerCase();
       const stored = await storagePut(
-        `library/${input.kind}/${safeName}.${ext}`,
+        `library/${input.kind}/${safeName}.jpg`,
         buffer,
       );
 
