@@ -7,6 +7,7 @@ import {
   AssetDropZone,
   AssetUploader,
 } from "../features/asset-library/AssetUploader";
+import { CharacterEditor } from "../features/character-studio/CharacterEditor";
 import { CharacterList } from "../features/character-studio/CharacterList";
 import { StoryList } from "../features/content-canvas/StoryList";
 import { ProjectHeader } from "../features/project/ProjectHeader";
@@ -87,31 +88,17 @@ export default function ProjectDetail() {
             onSelect={setFocusedCharacter}
             selectedId={focusedCharacter?.id}
           />
-          <div className="space-y-4">
+          <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
             {focusedCharacter ? (
-              <>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="text-sm font-medium">
-                    {focusedCharacter.name}'s sheets
-                  </div>
-                  <AssetUploader
-                    attachToProjectId={projectId}
-                    defaultKind="character_sheet"
-                    characterId={focusedCharacter.id}
-                    compact
-                  />
-                </div>
-                <AssetDropZone
-                  attachToProjectId={projectId}
-                  characterId={focusedCharacter.id}
-                  defaultKind="character_sheet"
-                >
-                  <AssetGrid projectId={projectId} characterId={focusedCharacter.id} />
-                </AssetDropZone>
-              </>
+              <CharacterEditor
+                characterId={focusedCharacter.id}
+                showDetailLink
+                onDeleted={() => setFocusedCharacter(null)}
+              />
             ) : (
               <div className="rounded-md border border-dashed border-[var(--border)] p-8 text-sm text-[var(--text-muted)]">
-                Select a character to manage its sheets.
+                Select a character on the left to edit description, persona, aliases,
+                world, and manage sheets. Same tools as the dedicated character page.
               </div>
             )}
           </div>
