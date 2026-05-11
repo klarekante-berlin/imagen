@@ -8,11 +8,6 @@ build/
 *.dist
 
 # Environment variables
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
 
 # IDE and editor files
 .vscode/
@@ -111,3 +106,19 @@ temp/
 
 # Manus version file (auto-generated, not part of source)
 client/public/__manus__/version.json
+
+# graphify local artifacts
+graphify-out/
+
+# manus runtime logs
+.manus-logs/
+
+# bulk-import source assets (large binaries, not source code)
+import-errors.log
+
+# user-pasted slide screenshots / repro images at repo root
+
+
+# local-dev stack (filesystem storage backend + dockerized mysql data)
+docker-data/
+storage-data/

@@ -9,20 +9,7 @@ import Library from "./pages/Library";
 import StoryGenerator from "./pages/StoryGenerator";
 import StoryDetail from "./pages/StoryDetail";
 import Archive from "./pages/Archive";
-
-function Router() {
-  return (
-    <Switch>
-      <Route path="/" component={Home} />
-      <Route path="/library" component={Library} />
-      <Route path="/generator" component={StoryGenerator} />
-      <Route path="/story/:id" component={StoryDetail} />
-      <Route path="/archive" component={Archive} />
-      <Route path="/404" component={NotFound} />
-      <Route component={NotFound} />
-    </Switch>
-  );
-}
+import Projects from "./pages/Projects";
 
 function App() {
   return (
@@ -30,7 +17,16 @@ function App() {
       <ThemeProvider defaultTheme="dark">
         <TooltipProvider>
           <Toaster />
-          <Router />
+          <Switch>
+            <Route path="/" component={Home} />
+            <Route path="/library" component={Library} />
+            <Route path="/generator" component={StoryGenerator} />
+            <Route path="/story/:id" component={StoryDetail} />
+            <Route path="/archive" component={Archive} />
+            <Route path="/projects" component={Projects} />
+            <Route path="/404" component={NotFound} />
+            <Route component={NotFound} />
+          </Switch>
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

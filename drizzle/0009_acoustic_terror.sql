@@ -1,0 +1,1 @@
+ALTER TABLE `slides` ADD `needsRegen` boolean DEFAULT false NOT NULL;

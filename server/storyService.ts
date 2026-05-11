@@ -1,64 +1,157 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { Asset, AiModel, ImageFormat } from "../drizzle/schema";
-import { storagePut } from "./storage";
+import type { ImageFormat, Slide } from "../drizzle/schema";
+import type {
+  ConsistencyContext,
+  ConsistencyContextV1,
+  ConsistencyContextV2,
+  Scene,
+} from "@shared/types";
+import type { ComposeSlideActionResult } from "./storyPlanner";
+// (type-only — runtime cycle is fine; both files already import from each other.)
+import { storagePut, storageReadLocal } from "./storage";
 import { ENV } from "./_core/env";
+import { prepareImageForAtlasRef } from "./_core/imagePrep";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── V1 → V2 normalize ────────────────────────────────────────────────────────
 
-export interface ConsistencyContext {
-  artStyle: string;
-  colorPalette: string;
-  environment: string;
-  characters: Array<{
-    assetId: number;
-    name: string;
-    outfit: string;
-    visualDescription: string;
-    referenceImageUrl?: string; // URL of the character sheet for reference
-  }>;
-  globalStylePrompt: string;
-  styleReferenceUrls?: string[]; // Style reference images (e.g. Mitchells)
+/**
+ * Read-time adapter. v1 stories on disk get wrapped in a single all-encompassing
+ * scene so callers only ever deal with v2.
+ */
+export function normalizeConsistencyContext(
+  raw: unknown,
+): ConsistencyContext | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Partial<ConsistencyContextV2 & ConsistencyContextV1>;
+
+  if (r.version === 2 && Array.isArray(r.scenes)) {
+    return r as ConsistencyContextV2;
+  }
+
+  // v1 → v2
+  const characters = Array.isArray(r.characters)
+    ? r.characters.map((c) => ({
+        characterId: 0,
+        assetId: c.assetId,
+        name: c.name,
+        outfit: c.outfit,
+        visualDescription: c.visualDescription,
+        referenceImageUrl: c.referenceImageUrl,
+        worldBuilt: false,
+      }))
+    : [];
+
+  return {
+    version: 2,
+    artStyle: r.artStyle ?? "",
+    colorPalette: r.colorPalette ?? "",
+    scenes: [
+      {
+        id: "scene-1",
+        slideRange: [1, 10],
+        environment: (r as ConsistencyContextV1).environment ?? "",
+        environmentLockNotes: "",
+      },
+    ],
+    characters,
+    globalStylePrompt: r.globalStylePrompt ?? "",
+    styleReferenceUrls: r.styleReferenceUrls,
+    worldBuiltAssetIds: [],
+    slideCount: 10,
+  };
 }
 
-export interface SlideContent {
-  slideNumber: number;
-  textContent: string;
-  caption: string;
-  charactersInSlide: string[];
-  imagePrompt: string;
+/** Find the scene containing a given slide number. Falls back to the first scene. */
+export function findSceneForSlide(
+  ctx: ConsistencyContext,
+  slideNumber: number,
+): Scene {
+  return (
+    ctx.scenes.find(
+      (s) => slideNumber >= s.slideRange[0] && slideNumber <= s.slideRange[1],
+    ) ?? ctx.scenes[0]
+  );
 }
 
-export interface StoryContent {
-  title: string;
-  consistencyContext: ConsistencyContext;
-  slides: SlideContent[];
-  usedAssetIds: number[];
-}
-
-export interface DetectedCharacter {
-  name: string;
-  role: string; // e.g. "Podcast-Host", "Politiker", "Kind"
-  suggestedAssetId: number | null;
-  confidence: "high" | "medium" | "low";
-}
-
-// ─── Anthropic Client ─────────────────────────────────────────────────────────
-
-function getAnthropicClient(): Anthropic {
-  const apiKey = ENV.anthropicApiKey || process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY not configured");
-  return new Anthropic({ apiKey });
+/**
+ * Recompute each scene's `slideRange` from the actual per-slide `sceneId`
+ * assignments. Per-slide `sceneId` is the source of truth post-reassign;
+ * the JSON-stored `slideRange` is treated as a derived cache that may go
+ * stale after slide moves/reorders. Empty scenes get `[0, 0]`.
+ *
+ * Note: ranges may be non-contiguous after reassigns (e.g. slides 1,2,4
+ * in scene-1, 3 in scene-2). We still report `[min, max]` because the
+ * type forces a tuple; callers that need the full membership should
+ * filter slides directly by `sceneId`.
+ */
+export function deriveSceneSlideRanges(
+  scenes: Scene[],
+  slides: Slide[],
+): Scene[] {
+  return scenes.map((s) => {
+    const numbers = slides
+      .filter((sl) => sl.sceneId === s.id)
+      .map((sl) => sl.slideNumber)
+      .sort((a, b) => a - b);
+    if (numbers.length === 0) {
+      return { ...s, slideRange: [0, 0] as [number, number] };
+    }
+    return {
+      ...s,
+      slideRange: [numbers[0], numbers[numbers.length - 1]] as [number, number],
+    };
+  });
 }
 
 // ─── Atlas Cloud Image Generation (gpt-image-2) ───────────────────────────────
 
 const ATLAS_BASE = "https://api.atlascloud.ai/api/v1";
-const ATLAS_MODEL = "openai/gpt-image-2/text-to-image";
+// text-to-image ignores reference_images. For ref-conditioned generation we
+// must hit the edit endpoint with `images` (plural).
+const ATLAS_MODEL_TEXT = "openai/gpt-image-2/text-to-image";
+const ATLAS_MODEL_EDIT = "openai/gpt-image-2/edit";
+
+/**
+ * Visual style is DERIVED from the stil-referenz / typografie assets that
+ * flow as reference_images, NOT from a hardcoded prompt string. A hardcoded
+ * anchor would override what the refs are meant to dictate. Kept as an
+ * empty string for legacy callers; the file used to export a Mitchell/Pixar
+ * description that has now been removed.
+ */
+export const PROJECT_STYLE_ANCHOR = "";
 
 function getAtlasKey(): string {
   const key = ENV.atlascloudApiKey || process.env.ATLASCLOUD_API_KEY;
   if (!key) throw new Error("ATLASCLOUD_API_KEY not configured");
   return key;
+}
+
+/**
+ * Upload an image buffer to Atlas Cloud and return the public download URL,
+ * which can then be used as a `images: [...]` entry on the edit endpoint.
+ * Atlas requires HTTP URLs there — data: URIs do NOT work.
+ */
+async function atlasUploadMedia(
+  buffer: Buffer,
+  mime: string,
+  fileName: string,
+): Promise<string> {
+  const key = getAtlasKey();
+  const blob = new Blob([buffer as unknown as BlobPart], { type: mime });
+  const form = new FormData();
+  form.set("file", blob, fileName);
+  const res = await fetch(`${ATLAS_BASE}/model/uploadMedia`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Atlas uploadMedia failed (${res.status}): ${err}`);
+  }
+  const json = (await res.json()) as { data?: { download_url?: string } };
+  const url = json.data?.download_url;
+  if (!url) throw new Error("Atlas uploadMedia: no download_url in response");
+  return url;
 }
 
 async function atlasGenerateImage(params: {
@@ -69,8 +162,10 @@ async function atlasGenerateImage(params: {
 }): Promise<string> {
   const key = getAtlasKey();
 
+  const useEdit = !!params.referenceImageUrls && params.referenceImageUrls.length > 0;
+
   const body: Record<string, unknown> = {
-    model: ATLAS_MODEL,
+    model: useEdit ? ATLAS_MODEL_EDIT : ATLAS_MODEL_TEXT,
     prompt: params.prompt,
     size: params.size,
     quality: params.quality ?? "high",
@@ -79,9 +174,37 @@ async function atlasGenerateImage(params: {
     enable_sync_mode: false,
   };
 
-  // Pass reference images if provided (character sheets + style refs)
-  if (params.referenceImageUrls && params.referenceImageUrls.length > 0) {
-    body.reference_images = params.referenceImageUrls.slice(0, 4); // max 4
+  if (useEdit) {
+    const rawRefs = params.referenceImageUrls!.slice(0, 10); // Atlas /edit supports up to 10
+    // Atlas's edit endpoint only accepts HTTP(S) URLs in `images`. Any
+    // data: URIs (local-storage backend) must be uploaded via uploadMedia first.
+    const refs: string[] = [];
+    for (let i = 0; i < rawRefs.length; i++) {
+      try {
+        const refUrl = rawRefs[i];
+        if (refUrl.startsWith("http")) {
+          refs.push(refUrl);
+        } else if (refUrl.startsWith("data:")) {
+          const match = /^data:([^;]+);base64,(.+)$/.exec(refUrl);
+          if (!match) throw new Error("malformed data: URI");
+          const mime = match[1];
+          const buffer = Buffer.from(match[2], "base64");
+          const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
+          refs.push(await atlasUploadMedia(buffer, mime, `ref-${Date.now()}-${i}.${ext}`));
+        } else {
+          throw new Error(`unsupported ref URL scheme: ${refUrl.slice(0, 30)}`);
+        }
+      } catch (e) {
+        console.error(`[atlas] failed to resolve ref #${i}:`, e);
+      }
+    }
+    body.images = refs;
+    body.input_fidelity = "high"; // preserve details from input refs
+    console.log(
+      `[atlas] EDIT endpoint, ${refs.length}/${rawRefs.length} ref URLs: [${refs.map((u) => u.slice(0, 80)).join(", ")}]`,
+    );
+  } else {
+    console.log("[atlas] TEXT-TO-IMAGE endpoint, no refs");
   }
 
   // Step 1: Submit generation job
@@ -106,247 +229,39 @@ async function atlasGenerateImage(params: {
 
   const predictionId = submitData.data.id;
 
-  // Step 2: Poll for result (max 4 minutes, every 5 seconds)
+  // Step 2: Poll for result. Edit jobs can take 5-8 min; bumped to 10 min total.
   const pollUrl = `${ATLAS_BASE}/model/prediction/${predictionId}`;
-  for (let i = 0; i < 48; i++) {
-    await new Promise((r) => setTimeout(r, 5000));
+  const POLL_INTERVAL_MS = 5000;
+  const MAX_POLLS = 120; // 10 minutes
+  let lastStatus = "";
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
 
     const pollRes = await fetch(pollUrl, {
       headers: { Authorization: `Bearer ${key}` },
     });
-
     if (!pollRes.ok) continue;
 
-    const pollData = await pollRes.json() as {
+    const pollData = (await pollRes.json()) as {
       data?: { status: string; outputs?: string[]; error?: string };
     };
     const status = pollData.data?.status;
+    if (status && status !== lastStatus) {
+      console.log(`[atlas] prediction ${predictionId} status=${status} (${i * 5}s elapsed)`);
+      lastStatus = status;
+    }
 
     if (status === "completed") {
       const url = pollData.data?.outputs?.[0];
       if (!url) throw new Error("Atlas Cloud: completed but no output URL");
       return url;
     }
-
     if (status === "failed") {
       throw new Error(`Atlas Cloud generation failed: ${pollData.data?.error ?? "unknown"}`);
     }
-    // still processing – continue polling
   }
 
-  throw new Error("Atlas Cloud: generation timed out after 4 minutes");
-}
-
-// ─── Auto Character Detection ─────────────────────────────────────────────────
-
-/**
- * Uses Claude to detect characters in a script/theme and match them to assets.
- * Returns detected characters with suggested asset IDs.
- */
-export async function detectCharactersFromScript(
-  scriptOrTheme: string,
-  availableAssets: Asset[]
-): Promise<DetectedCharacter[]> {
-  const client = getAnthropicClient();
-
-  const assetList = availableAssets
-    .map((a) => `ID:${a.id} | "${a.name}" | Kategorie: ${a.category} | ${a.description || ""}`)
-    .join("\n");
-
-  const prompt = `Analysiere dieses Skript/Thema und erkenne alle Charaktere darin.
-Dann ordne jeden Charakter dem passendsten Asset aus der Liste zu.
-
-SKRIPT/THEMA:
-${scriptOrTheme}
-
-VERFÜGBARE ASSETS:
-${assetList}
-
-Antworte als JSON-Array ohne Markdown:
-[
-  {
-    "name": "Charaktername wie im Skript",
-    "role": "Rolle/Funktion (z.B. Podcast-Host, Politiker, Kind, Hund)",
-    "suggestedAssetId": <Asset-ID oder null wenn kein passendes Asset>,
-    "confidence": "high|medium|low"
-  }
-]
-
-Matching-Regeln:
-- "Toni" oder "Host" oder "Moderator" → suche nach dad/family/host Assets
-- Historische Persönlichkeiten (Scholz, Merkel, etc.) → historische-persoenlichkeit oder politiker Assets
-- Sportler → sport-athleten Assets
-- Musiker → musik-legenden oder moderne-popstars Assets
-- Kinder → the-boy oder lily oder girl Assets
-- Tiere → pug, cat, tiere Assets
-- Nur Charaktere die wirklich im Skript vorkommen, keine erfundenen`;
-
-  const response = await client.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 1000,
-    messages: [{ role: "user", content: prompt }],
-  });
-
-  const text = response.content[0].type === "text" ? response.content[0].text.trim() : "[]";
-  const cleaned = text.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
-
-  try {
-    return JSON.parse(cleaned) as DetectedCharacter[];
-  } catch {
-    return [];
-  }
-}
-
-// ─── Story Text Generation ────────────────────────────────────────────────────
-
-export async function generateStoryText(
-  theme: string,
-  selectedAssets: Asset[],
-  model: AiModel,
-  imageFormat: ImageFormat
-): Promise<StoryContent> {
-  const client = getAnthropicClient();
-
-  const assetDescriptions = selectedAssets
-    .map(
-      (a) =>
-        `- ID:${a.id} | "${a.name}" (${a.category}): ${a.visualDescription || a.description || "Keine Beschreibung"}`
-    )
-    .join("\n");
-
-  const aspectRatio =
-    imageFormat === "1:1" ? "quadratisch 1080x1080px" : "Hochformat 1080x1350px";
-
-  const systemPrompt = `Du bist ein erfahrener Content-Stratege für Instagram Carousel Stories im Stil des Formats "Hey was war denn das?" von klarekante.berlin.
-
-DEIN STIL:
-- Berliner Direktheit: kein Bullshit, kein Wellness-Coach-Sprech
-- Satirisch und trocken wie Ricky Gervais – aber mit Herz
-- Zahlen und Fakten als Schockmomente ("41 FUCKING PROZENT!")
-- Persönliche Anekdoten als emotionale Auflösung
-- Jeder Slide hat eine klare Aussage – kein Fülltext
-- Dialoge sind knapp, pointiert, real
-
-CAROUSEL-STRUKTUR (10 Slides):
-- Slide 1: HOOK – ein Satz der sofort trifft, Frage oder provokante These
-- Slide 2-3: KONTEXT – das Problem in Zahlen/Fakten aufbauen
-- Slide 4-5: ESKALATION – die Absurdität des Systems zeigen
-- Slide 6-7: WENDEPUNKT – persönliche Geschichte oder konkretes Beispiel
-- Slide 8-9: AUFLÖSUNG – die eigentliche Botschaft, ehrlich und direkt
-- Slide 10: CTA – Aufruf zum Folgen, Kommentieren oder Teilen
-
-KONSISTENZ-REGELN:
-- Outfits, Umgebungen und Charaktere bleiben in ALLEN 10 Slides identisch
-- Kein Outfit-Wechsel, kein Setting-Wechsel innerhalb einer Story
-- Der Bildstil ist 3D-Cartoon-Render im Pixar/Mitchell's-Stil – warm, expressiv, detailreich
-
-TEXT-OVERLAY-REGELN:
-- textContent erscheint DIREKT IM BILD als großer, lesbarer Text
-- Max 2-3 kurze Sätze – kein Fließtext
-- Darf Zahlen, Ausrufezeichen, Kursivschrift-Hinweise enthalten
-- Muss auch ohne Bild verständlich sein
-
-Antworte IMMER als valides JSON ohne Markdown-Codeblöcke.`;
-
-  const userPrompt = `Erstelle ein Instagram Carousel zum Thema: "${theme}"
-
-${
-  selectedAssets.length > 0
-    ? `Charaktere und Assets für diese Story (verwende diese exakt):
-${assetDescriptions}
-
-WICHTIG: Die assetId in den Charakteren muss mit den IDs oben übereinstimmen!`
-    : "Keine spezifischen Charaktere ausgewählt – erfinde passende Charaktere die zum Thema passen."
-}
-
-Bildformat: ${aspectRatio}
-
-Erstelle eine JSON-Antwort mit dieser exakten Struktur:
-{
-  "title": "Kurzer, einprägsamer Carousel-Titel (max 5 Wörter)",
-  "consistencyContext": {
-    "artStyle": "3D cartoon render, Pixar animation style, expressive faces, bold outlines, warm cinematic lighting, detailed textures, Mitchell's vs the Machines aesthetic",
-    "colorPalette": "Beschreibe die Farbpalette die zu diesem spezifischen Thema und Setting passt (aus der Szene entstehend, nicht aufgezwungen)",
-    "environment": "Hauptumgebung/Setting das in ALLEN Slides gleich bleibt – sehr spezifisch beschreiben",
-    "characters": [
-      {
-        "assetId": <ID aus den verfügbaren Assets oder 0 wenn kein Asset>,
-        "name": "Charaktername",
-        "outfit": "EXAKTE Outfit-Beschreibung die in ALLEN Slides identisch bleibt – sehr detailliert",
-        "visualDescription": "Vollständige visuelle Beschreibung: Körperbau, Gesicht, Haare, Alter, Ausdruck – sehr detailliert für Bildgenerierung"
-      }
-    ],
-    "globalStylePrompt": "Einziger konsistenter Style-String für ALLE Slides. Enthält: Rendering-Stil, Charakterbeschreibungen mit Outfits, Setting. Englisch. Max 100 Wörter."
-  },
-  "slides": [
-    {
-      "slideNumber": 1,
-      "textContent": "TEXT DER DIREKT IM BILD ERSCHEINT – max 2-3 kurze Sätze auf Deutsch. Provokant, witzig oder emotional.",
-      "caption": "Instagram-Caption für diesen Slide (1-2 Sätze + Emojis)",
-      "charactersInSlide": ["Namen der Charaktere in diesem Slide"],
-      "imagePrompt": "Detaillierter Bildprompt auf Englisch. Szene + Charaktere + Aktion + Ausdruck. MUSS enthalten: 1) globalStylePrompt, 2) Outfit-Details der vorkommenden Charaktere, 3) die exakte Szene, 4) den deutschen textContent als großen lesbaren Text im Bild (bold, clear, readable font, positioned at bottom or top third)"
-    }
-  ],
-  "usedAssetIds": [<IDs der verwendeten Assets>]
-}
-
-WICHTIG:
-- Genau 10 Slides
-- Jeder imagePrompt MUSS den textContent als Text-Overlay im Bild enthalten
-- Jeder imagePrompt MUSS die Outfit-Details der vorkommenden Charaktere enthalten
-- Die Story muss einen echten narrativen Bogen haben: Hook → Aufbau → Eskalation → Wendung → Auflösung → CTA`;
-
-  const claudeModel =
-    model === "claude-opus-4-5" ? "claude-opus-4-5" : "claude-sonnet-4-6";
-
-  // Retry with exponential backoff for overloaded errors (HTTP 529)
-  let lastError: Error = new Error("Unknown error");
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    try {
-      const response = await client.messages.create({
-        model: claudeModel,
-        max_tokens: 8000,
-        messages: [{ role: "user", content: userPrompt }],
-        system: systemPrompt,
-      });
-
-      const content = response.content[0];
-      if (content.type !== "text") throw new Error("Unexpected response type from Claude");
-
-      // Strip potential markdown code blocks
-      let jsonText = content.text.trim();
-      if (jsonText.startsWith("```")) {
-        jsonText = jsonText.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
-      }
-
-      const parsed = JSON.parse(jsonText) as StoryContent;
-
-      // Validate structure
-      if (
-        !parsed.title ||
-        !parsed.consistencyContext ||
-        !Array.isArray(parsed.slides) ||
-        parsed.slides.length !== 10
-      ) {
-        throw new Error(
-          `Invalid story structure: got ${parsed.slides?.length ?? 0} slides, expected 10`
-        );
-      }
-
-      return parsed;
-    } catch (err: unknown) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      const isOverloaded =
-        lastError.message.includes("529") || lastError.message.includes("overloaded");
-      if (!isOverloaded || attempt === 4) throw lastError;
-      const delay = Math.pow(2, attempt) * 5000; // 10s, 20s, 40s
-      console.log(
-        `[StoryService] Anthropic overloaded, retry ${attempt}/4 in ${delay / 1000}s...`
-      );
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-  }
-  throw lastError;
+  throw new Error(`Atlas Cloud: generation timed out after ${(MAX_POLLS * POLL_INTERVAL_MS) / 60000} minutes`);
 }
 
 // ─── Image Generation via Atlas Cloud (gpt-image-2) with Reference Images ────
@@ -358,33 +273,91 @@ export async function generateSlideImage(
   storyId: number,
   imageFormat: ImageFormat,
   characterReferenceUrls: string[] = [], // Character sheet URLs for this slide's characters
-  styleReferenceUrls: string[] = []      // Global style reference URLs
+  styleReferenceUrls: string[] = [],     // Global style reference URLs
+  slideCharacterNames: string[] = [],    // Names of characters appearing in this slide
 ): Promise<{ imageKey: string; imageUrl: string }> {
 
-  // Build the full prompt with text overlay instruction
+  const scene = findSceneForSlide(consistencyContext, slideNumber);
+  const totalSlides = consistencyContext.slideCount;
+  const sceneIdx = consistencyContext.scenes.findIndex((s) => s.id === scene.id);
+  const nextScene = consistencyContext.scenes[sceneIdx + 1];
+  const isLastOfScene = slideNumber === scene.slideRange[1];
+
+  // Build per-slide character block. When the character has a reference image
+  // attached (via characterReferenceUrls), the model already sees the full
+  // appearance — extra text just adds noise. When NO ref is available, we
+  // include the full visualDescription + outfit so consistency holds via text.
+  const hasAnyRefs = characterReferenceUrls.length > 0;
+  const slideChars = slideCharacterNames
+    .map((name) =>
+      consistencyContext.characters.find(
+        (c) => c.name.toLowerCase() === name.toLowerCase(),
+      ),
+    )
+    .filter((c): c is NonNullable<typeof c> => !!c);
+
+  const characterBlock = (() => {
+    if (slideChars.length === 0) return null;
+    if (hasAnyRefs) {
+      // Refs carry the appearance — just name them + remind the model to use refs.
+      return (
+        "Characters: " +
+        slideChars.map((c) => c.name).join(", ") +
+        ". Match their appearance EXACTLY to the reference images provided."
+      );
+    }
+    // No refs — describe everything in text.
+    return (
+      "Characters in this slide: " +
+      slideChars
+        .map((c) => {
+          const parts = [`${c.name} — ${c.visualDescription}`];
+          if (c.outfit) parts.push(`outfit: ${c.outfit}`);
+          return parts.join("; ");
+        })
+        .join(" | ") +
+      ". Keep their appearance/outfit identical across slides."
+    );
+  })();
+
+  // Style refs (rendering look + typography) are the AUTHORITY for everything
+  // visual. When they flow, the model must copy their render style and the
+  // typography treatment for the in-image text overlay. No hardcoded style.
+  const hasStyleRefs = styleReferenceUrls.length > 0;
+  const styleRefHint = hasStyleRefs
+    ? "STYLE AUTHORITY: the reference images marked as style/typography sheets define the visual identity. Copy their rendering style (cartoon look, color treatment, lighting), and copy their typography exactly for the in-image text overlay (font, weight, color, highlight bars, line breaks, placement). Do NOT invent a different rendering or typography style."
+    : null;
+
+  // Build the full prompt. NO hardcoded render-style anchor — style is the
+  // authority of stil-referenz refs (typography, color, render look). Server
+  // only contributes: scene/lock, characters, slide action, ref-authority hint.
   const fullPrompt = [
     consistencyContext.globalStylePrompt,
+    characterBlock,
+    `Setting: ${scene.environment}.`,
+    scene.environmentLockNotes ? `Lock: ${scene.environmentLockNotes}.` : null,
+    isLastOfScene && nextScene && scene.transitionToNext
+      ? `Transition cue: ${scene.transitionToNext} (next scene: ${nextScene.environment}).`
+      : null,
     slidePrompt,
-    `Setting: ${consistencyContext.environment}.`,
-    `Art style: ${consistencyContext.artStyle}.`,
-    `Slide ${slideNumber} of 10.`,
-    "High quality 3D render, cinematic composition, sharp details.",
-    "Text must be large, bold, clearly readable, positioned in the lower or upper third of the image.",
+    styleRefHint,
   ]
     .filter(Boolean)
     .join(" ");
 
-  // Combine reference images: character sheets first, then style references
-  // gpt-image-2 via Atlas Cloud accepts up to 4 reference images
-  const allReferenceUrls = [
-    ...characterReferenceUrls.slice(0, 2), // max 2 character sheets
-    ...styleReferenceUrls.slice(0, 2),     // max 2 style references
-  ].filter(Boolean).slice(0, 4);
+  // Atlas /edit endpoint supports up to 10 reference images.
+  // Priority: characters first (up to 6 for identity), then style refs (up to 4).
+  const charRefs = characterReferenceUrls.slice(0, 6);
+  const remainingSlots = Math.max(0, 10 - charRefs.length);
+  const styleRefs = styleReferenceUrls.slice(0, remainingSlots);
+  const allReferenceUrls = [...charRefs, ...styleRefs].filter(Boolean).slice(0, 10);
 
   // gpt-image-2 via Atlas Cloud supports 1024x1024 and 1024x1536
   const size = imageFormat === "1:1" ? "1024x1024" : "1024x1536";
 
-  console.log(`[StoryService] Generating slide ${slideNumber} with ${allReferenceUrls.length} reference images`);
+  console.log(
+    `[StoryService] Slide ${slideNumber}/${totalSlides}: ${allReferenceUrls.length} ref images, ${slideChars.length} chars in text (${slideChars.map((c) => c.name).join(", ") || "none"})`,
+  );
 
   // Generate via Atlas Cloud
   const atlasUrl = await atlasGenerateImage({
@@ -451,34 +424,30 @@ export async function generateSlideImageFreepik(
   return { imageKey: key, imageUrl: url };
 }
 
-// ─── Character Detection (simple text matching) ───────────────────────────────
-
-export function detectCharactersInText(
-  text: string,
-  characters: ConsistencyContext["characters"]
-): string[] {
-  const found: string[] = [];
-  for (const char of characters) {
-    if (text.toLowerCase().includes(char.name.toLowerCase())) {
-      found.push(char.name);
-    }
-  }
-  return found;
-}
-
-// ─── Presigned URL Helper ─────────────────────────────────────────────────────
+// ─── Reference Image URL Helper ───────────────────────────────────────────────
 
 /**
- * Converts a relative /manus-storage/... URL to an absolute presigned CloudFront URL.
- * Atlas Cloud requires absolute URLs for reference_images.
+ * Resolves a /manus-storage/<key> URL into something Atlas Cloud can fetch.
+ *
+ * - Already absolute http(s) URL → return as-is.
+ * - STORAGE_BACKEND=forge → presigned CloudFront URL via Forge.
+ * - STORAGE_BACKEND=local → read the file and return a `data:image/...;base64,...`
+ *   URI. Avoids the chicken-and-egg of "Atlas can't reach localhost".
  */
 export async function getPresignedStorageUrl(relativeOrAbsoluteUrl: string): Promise<string | null> {
   if (!relativeOrAbsoluteUrl) return null;
-  // Already absolute (e.g. https://...)
   if (relativeOrAbsoluteUrl.startsWith("http")) return relativeOrAbsoluteUrl;
-  // Extract the key from /manus-storage/<key>
   const key = relativeOrAbsoluteUrl.replace(/^\/manus-storage\//, "");
   if (!key) return null;
+
+  if (ENV.storageBackend === "local") {
+    const file = await storageReadLocal(key);
+    if (!file) return null;
+    // Atlas's edit endpoint chokes on multi-MB JSON bodies. ALWAYS downscale
+    // to 1024px / JPEG q80 (typically 80–300KB), regardless of original size.
+    const prepared = await prepareImageForAtlasRef(file.buffer, file.contentType);
+    return `data:${prepared.mediaType};base64,${prepared.buffer.toString("base64")}`;
+  }
 
   const forgeApiUrl = ENV.forgeApiUrl;
   const forgeApiKey = ENV.forgeApiKey;
@@ -496,4 +465,68 @@ export async function getPresignedStorageUrl(relativeOrAbsoluteUrl: string): Pro
   } catch {
     return null;
   }
+}
+
+// ─── Variant-aware prompt composition ────────────────────────────────────────
+
+/**
+ * Append composer output to an `imagePrompt` so gpt-image-2 can pick the
+ * right variant from the full character sheet without panel-level cropping.
+ *
+ * Layout per character:
+ *   - variant + activity → "Toni: COOKING-APRON variant (kariertes Hemd, weiße Schürze) — hält Grillzange"
+ *   - activity only      → "Toni — sitzt auf Decke, malt mit Buntstiften"
+ *   - variant only       → "Toni: COOKING-APRON variant (kariertes Hemd, weiße Schürze)"
+ *   - nothing            → omit
+ *
+ * Trailing "Scene mood: …" line only when `composition.sceneActivityNotes`
+ * is set. If no character has variant or activity AND no scene mood,
+ * `basePrompt` is returned unchanged.
+ *
+ * Pure function — caller looks up variant descriptions ahead of time.
+ */
+export function augmentImagePromptWithComposition(
+  basePrompt: string,
+  composition: ComposeSlideActionResult,
+  charactersInSlide: string[],
+  variantDescriptions: Map<string, string>,
+  sceneVariantDescription?: string,
+): string {
+  const lines: string[] = [];
+  for (const name of charactersInSlide) {
+    const variantName = composition.variantsByCharacter[name];
+    const activity = composition.activitiesByCharacter[name];
+    if (variantName && activity) {
+      const desc = variantDescriptions.get(name);
+      const variantPart = desc
+        ? `${variantName.toUpperCase()} variant (${desc})`
+        : `${variantName.toUpperCase()} variant`;
+      lines.push(`- ${name}: ${variantPart} — ${activity}`);
+    } else if (activity) {
+      lines.push(`- ${name} — ${activity}`);
+    } else if (variantName) {
+      const desc = variantDescriptions.get(name);
+      const variantPart = desc
+        ? `${variantName.toUpperCase()} variant (${desc})`
+        : `${variantName.toUpperCase()} variant`;
+      lines.push(`- ${name}: ${variantPart}`);
+    }
+  }
+
+  const sceneLine = composition.sceneActivityNotes?.trim()
+    ? `Scene mood: ${composition.sceneActivityNotes.trim()}${
+        sceneVariantDescription ? ` (${sceneVariantDescription})` : ""
+      }`
+    : null;
+
+  if (lines.length === 0 && !sceneLine) return basePrompt;
+
+  const parts = [basePrompt.trim()];
+  if (lines.length > 0) {
+    parts.push("", "Character details:", ...lines);
+  }
+  if (sceneLine) {
+    parts.push("", sceneLine);
+  }
+  return parts.join("\n");
 }

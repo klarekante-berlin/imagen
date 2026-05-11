@@ -2,12 +2,17 @@ import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
+import path from "path";
+import fs from "fs";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./oauth";
+import { serve } from "inngest/express";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { inngest, generateStoryImages, generateSingleSlide } from "../jobQueue";
+import { migrate } from "drizzle-orm/libsql/migrator";
+import { getDb, getLibSQLClient } from "../db";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -28,14 +33,48 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
+async function runMigrations() {
+  const migrationsFolder = path.resolve(process.cwd(), "drizzle/migrations");
+  if (!fs.existsSync(migrationsFolder)) {
+    console.log("[db] No migrations folder found, skipping auto-migrate.");
+    return;
+  }
+  // Run schema migrations (vector index is handled separately below)
+  console.log("[db] Running migrations...");
+  await migrate(getDb(), { migrationsFolder });
+  console.log("[db] Migrations complete.");
+
+  // Vector index: Turso Cloud only – skip gracefully on local SQLite
+  try {
+    await getLibSQLClient().execute(
+      "CREATE INDEX IF NOT EXISTS assets_embedding_idx ON assets(libsql_vector_idx(embedding))"
+    );
+    console.log("[db] Vector index ready.");
+  } catch {
+    console.warn("[db] Vector index skipped (local SQLite does not support libsql_vector_idx).");
+  }
+}
+
 async function startServer() {
+  await runMigrations();
   const app = express();
   const server = createServer(app);
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
-  registerOAuthRoutes(app);
+
+  // Inngest webhook endpoint
+  // Dev: set INNGEST_DEV=true for inline execution (no Inngest server needed)
+  // Prod: Inngest cloud calls this endpoint to dispatch jobs
+  app.use(
+    "/api/inngest",
+    serve({
+      client: inngest,
+      functions: [generateStoryImages, generateSingleSlide],
+    })
+  );
+
   // tRPC API
   app.use(
     "/api/trpc",
@@ -60,6 +99,12 @@ async function startServer() {
 
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
+    if (process.env.NODE_ENV === "development") {
+      console.log(`Inngest endpoint: http://localhost:${port}/api/inngest`);
+      console.log(
+        `Tip: Run 'npx inngest-cli@latest dev' to enable async job queue, or set INNGEST_DEV=true for inline execution.`
+      );
+    }
   });
 }
 

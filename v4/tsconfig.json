@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.json",
+  "include": ["client/src/**/*", "shared/**/*", "server/**/*", "drizzle/**/*"],
+  "exclude": ["node_modules", "build", "dist", "**/*.test.ts"],
+  "compilerOptions": {
+    "tsBuildInfoFile": "../node_modules/typescript/tsbuildinfo-v4",
+    "baseUrl": ".",
+    "paths": {
+      "@v4/*": ["./client/src/*"],
+      "@v4shared/*": ["./shared/*"]
+    }
+  }
+}
