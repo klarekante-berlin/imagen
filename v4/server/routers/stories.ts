@@ -4,6 +4,7 @@ import { STORY_KINDS } from "../../shared/types/enums";
 import type { PromptKey } from "../../shared/types/enums";
 import { publicProcedure, router } from "../_core/trpc";
 import { extractStyleFromReferences } from "../services/ai/extract-style";
+import { resolveStoryReferenceAssets } from "../services/ai/reference-resolver";
 import { splitContent } from "../services/ai/split-content";
 import { detachAllForRef } from "../services/db/attachments";
 import { resolveStoryAttachmentContext } from "../services/db/story-context";
@@ -206,9 +207,34 @@ export const storiesRouter = router({
     }),
 
   /**
-   * Style anchor: extract from the story's resolved reference assets (story
-   * scope ∪ project scope ∪ world-transitive characters' primary sheets), and
-   * store on the story row. Overrides the project default at generation time.
+   * Returns the same reference set the generator and the style extractor see
+   * (character primaries with lazy backfill + directly attached assets).
+   * Drives the canvas Style panel's reference count.
+   */
+  previewReferenceAssets: publicProcedure
+    .input(z.object({ storyId: z.string() }))
+    .query(async ({ input }) => {
+      const story = await getStory(input.storyId);
+      if (!story) throw new TRPCError({ code: "NOT_FOUND" });
+      const resolved = await resolveStoryReferenceAssets(story.id, story.projectId, {
+        persistBackfill: false,
+      });
+      return {
+        refs: resolved.refs.map((r) => ({
+          assetId: r.asset.id,
+          name: r.asset.name,
+          kind: r.asset.kind,
+          imageUrl: r.asset.imageUrl,
+          source: r.source,
+          characterName: r.characterName,
+        })),
+      };
+    }),
+
+  /**
+   * Style anchor: extract from the story's resolved reference set (character
+   * primaries + directly attached assets), and store on the story row.
+   * Overrides the project default at generation time.
    */
   extractStyleAnchor: publicProcedure
     .input(z.object({ storyId: z.string() }))
@@ -221,17 +247,17 @@ export const storiesRouter = router({
       }
       const story = await getStory(input.storyId);
       if (!story) throw new TRPCError({ code: "NOT_FOUND" });
-      const ctx = await resolveStoryAttachmentContext(story.id, story.projectId);
-      if (ctx.attachedAssets.length === 0) {
+      const resolved = await resolveStoryReferenceAssets(story.id, story.projectId);
+      if (resolved.refs.length === 0) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message:
-            "Attach at least one reference image to the story (or its project) first.",
+            "No reference images available. Attach a character with a sheet, or attach a style/environment/prop asset to the story (or its project).",
         });
       }
       try {
         const result = await extractStyleFromReferences({
-          assets: ctx.attachedAssets,
+          assets: resolved.refs.map((r) => r.asset),
         });
         const updated = await updateStory(story.id, {
           styleAnchorText: result.text,

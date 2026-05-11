@@ -1,107 +1,20 @@
-import { and, eq, isNotNull } from "drizzle-orm";
+import { isNotNull } from "drizzle-orm";
 import { db } from "../../_core/db";
 import {
-  assets as assetsTable,
   frames as framesTable,
   type Asset,
   type Frame,
   type Scene,
 } from "../../../drizzle/schema";
 import type { RenditionParams } from "../../../shared/types/domain";
-import { updateCharacter } from "../db/characters";
 import { getFrame, updateFrame } from "../db/frames";
 import { getProject } from "../db/projects";
 import { createRendition, deleteRendition } from "../db/renditions";
 import { getScene } from "../db/scenes";
 import { getStory } from "../db/stories";
-import { resolveStoryAttachmentContext } from "../db/story-context";
 import { storageDelete, storagePut, storageRead } from "../storage";
 import { atlasPoll, atlasSubmit, atlasUploadMedia } from "./atlas";
-
-type ResolvedRef = {
-  asset: Asset;
-  source: "character_primary" | "attached_asset";
-  characterName?: string;
-};
-
-async function loadAssetById(id: string): Promise<Asset | null> {
-  const [a] = await db.select().from(assetsTable).where(eq(assetsTable.id, id)).limit(1);
-  return a ?? null;
-}
-
-async function loadAssetByCharacter(characterId: string): Promise<Asset | null> {
-  // First match wins. Cheap fallback when character.primaryAssetId is null.
-  const [a] = await db
-    .select()
-    .from(assetsTable)
-    .where(and(eq(assetsTable.characterId, characterId), eq(assetsTable.kind, "character_sheet")))
-    .limit(1);
-  return a ?? null;
-}
-
-/**
- * Builds the final reference list for an Atlas edit call.
- *
- * Sources (deduplicated, preserving the first occurrence):
- *  1. For each character attached to the story (or to its project / world):
- *     use character.primaryAssetId if set; otherwise look up any
- *     character_sheet asset whose characterId points back at the character.
- *     If we find one this way, write the pointer back so the next run is
- *     direct.
- *  2. Every asset attached directly to the story or project, in any kind
- *     (character_sheet, environment, style_ref, prop, generated_frame).
- *
- * Up to 10 refs total (Atlas's edit cap). Order: character sheets first
- * (identity), then everything else.
- */
-async function resolveReferenceAssets(
-  scene: Scene,
-  storyId: string,
-  projectId: string | null,
-): Promise<{
-  refs: ResolvedRef[];
-  attachedCharNames: string[];
-}> {
-  const ctx = await resolveStoryAttachmentContext(storyId, projectId);
-
-  const refs: ResolvedRef[] = [];
-  const seenAssetIds = new Set<string>();
-  const attachedCharNames: string[] = [];
-
-  // 1) Character primary sheets — with lazy backfill.
-  for (const c of ctx.characters) {
-    let asset: Asset | null = null;
-    if (c.primaryAssetId) {
-      asset = await loadAssetById(c.primaryAssetId);
-    }
-    if (!asset) {
-      const fallback = await loadAssetByCharacter(c.id);
-      if (fallback) {
-        asset = fallback;
-        // Backfill so subsequent runs hit the direct path.
-        await updateCharacter(c.id, { primaryAssetId: fallback.id });
-      }
-    }
-    if (!asset) continue;
-    if (seenAssetIds.has(asset.id)) {
-      attachedCharNames.push(c.name);
-      continue;
-    }
-    seenAssetIds.add(asset.id);
-    refs.push({ asset, source: "character_primary", characterName: c.name });
-    attachedCharNames.push(c.name);
-  }
-
-  // 2) Directly attached assets — every kind passes through.
-  for (const a of ctx.attachedAssets) {
-    if (seenAssetIds.has(a.id)) continue;
-    seenAssetIds.add(a.id);
-    refs.push({ asset: a, source: "attached_asset" });
-  }
-
-  void scene;
-  return { refs: refs.slice(0, 10), attachedCharNames };
-}
+import { resolveStoryReferenceAssets } from "./reference-resolver";
 
 async function uploadRefToAtlas(asset: Asset): Promise<string | null> {
   if (asset.imageUrl.startsWith("http")) return asset.imageUrl;
@@ -166,15 +79,13 @@ export async function submitFrameForGeneration(input: SubmitInput): Promise<void
   const story = await getStory(scene.storyId);
   if (!story) throw new Error(`Story ${scene.storyId} not found`);
 
-  const { refs, attachedCharNames } = await resolveReferenceAssets(
-    scene,
+  const { refs, attachedCharNames } = await resolveStoryReferenceAssets(
     story.id,
     story.projectId,
   );
   const hasStyleRefs = refs.some((r) => r.asset.kind === "style_ref");
 
-  // Effective style anchor: story override beats project default. Either
-  // can be null and that's fine — buildPrompt just skips the STYLE line.
+  // Effective style anchor: story override beats project default.
   let styleAnchorText: string | null = story.styleAnchorText ?? null;
   if (!styleAnchorText && story.projectId) {
     const project = await getProject(story.projectId);
@@ -265,11 +176,10 @@ export async function pollPendingFrame(frameId: string): Promise<Frame["status"]
     return "generating";
   }
 
-  // completed — download + store
   const imgRes = await fetch(result.outputUrl);
   if (!imgRes.ok) {
     console.error(`[v4 poller] CDN download failed for ${frame.id}: ${imgRes.status}`);
-    return "generating"; // retry next tick
+    return "generating";
   }
   const buffer = Buffer.from(await imgRes.arrayBuffer());
   const stored = await storagePut(

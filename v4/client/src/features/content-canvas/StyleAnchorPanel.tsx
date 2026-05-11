@@ -12,15 +12,13 @@ export function StyleAnchorPanel({ storyId, projectId }: Props) {
     { id: projectId ?? "" },
     { enabled: !!projectId },
   );
-  const ctxQuery = trpc.projects.resolveContextForStory.useQuery({
-    storyId,
-    projectId: projectId ?? null,
-  });
+  const refsQuery = trpc.stories.previewReferenceAssets.useQuery({ storyId });
 
   const utils = trpc.useUtils();
   const invalidate = () => {
     utils.stories.get.invalidate({ id: storyId });
     if (projectId) utils.projects.get.invalidate({ id: projectId });
+    utils.stories.previewReferenceAssets.invalidate({ storyId });
   };
 
   const extractStory = trpc.stories.extractStyleAnchor.useMutation({
@@ -46,7 +44,10 @@ export function StyleAnchorPanel({ storyId, projectId }: Props) {
   const projectText = project?.styleAnchorText ?? null;
   const effective = storyText ?? projectText ?? null;
   const effectiveSource = storyText ? "story" : projectText ? "project" : null;
-  const refCount = ctxQuery.data?.attachedAssets.length ?? 0;
+  const refs = refsQuery.data?.refs ?? [];
+  const refCount = refs.length;
+  const charRefCount = refs.filter((r) => r.source === "character_primary").length;
+  const attachedRefCount = refs.filter((r) => r.source === "attached_asset").length;
 
   useEffect(() => {
     if (!editing) {
@@ -127,7 +128,13 @@ export function StyleAnchorPanel({ storyId, projectId }: Props) {
       <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
         <span>
           References available: <strong>{refCount}</strong>
-          {refCount === 0 && " — attach assets first"}
+          {refCount > 0 && (
+            <span className="ml-1 text-[var(--text-muted)]">
+              ({charRefCount} char sheet{charRefCount === 1 ? "" : "s"} ·{" "}
+              {attachedRefCount} direct)
+            </span>
+          )}
+          {refCount === 0 && " — attach a character (with a sheet) or an asset first"}
         </span>
         {effective && (
           <span className="rounded-full bg-[var(--surface-muted)] px-2 py-0.5 text-[10px] uppercase tracking-wide">
