@@ -5,9 +5,10 @@ import { AssetGrid } from "../features/asset-library/AssetGrid";
 import { AssetSearch } from "../features/asset-library/AssetSearch";
 import { AssetUploader } from "../features/asset-library/AssetUploader";
 import { CharacterList } from "../features/character-studio/CharacterList";
+import { StoryList } from "../features/content-canvas/StoryList";
 import { trpc } from "../lib/trpc";
 
-type Tab = "library" | "characters";
+type Tab = "contents" | "library" | "characters";
 
 export default function ProjectDetail() {
   const [, params] = useRoute("/projects/:id");
@@ -18,7 +19,7 @@ export default function ProjectDetail() {
     { enabled: !!project.data?.templateId },
   );
 
-  const [tab, setTab] = useState<Tab>("library");
+  const [tab, setTab] = useState<Tab>("contents");
   const [focusedCharacter, setFocusedCharacter] = useState<Character | null>(null);
 
   if (!projectId) return <div>Project id missing.</div>;
@@ -39,13 +40,13 @@ export default function ProjectDetail() {
 
       <div className="border-b border-[var(--border)]">
         <nav className="flex gap-6 text-sm">
-          {(["library", "characters"] as Tab[]).map((t) => (
+          {(["contents", "library", "characters"] as Tab[]).map((t) => (
             <button
               key={t}
               type="button"
               onClick={() => {
                 setTab(t);
-                if (t === "library") setFocusedCharacter(null);
+                if (t !== "characters") setFocusedCharacter(null);
               }}
               className={`-mb-px border-b-2 px-1 pb-3 capitalize ${
                 tab === t
@@ -58,6 +59,8 @@ export default function ProjectDetail() {
           ))}
         </nav>
       </div>
+
+      {tab === "contents" && <StoryList projectId={projectId} />}
 
       {tab === "library" && (
         <div className="space-y-4">
