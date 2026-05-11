@@ -8,7 +8,14 @@ type Props = {
 };
 
 export function FrameInspector({ frameId, onDeleted }: Props) {
-  const frameQuery = trpc.frames.get.useQuery({ id: frameId });
+  const frameQuery = trpc.frames.get.useQuery(
+    { id: frameId },
+    {
+      // Poll while generating so we flip back to ready on completion.
+      refetchInterval: (q) => (q.state.data?.status === "generating" ? 5000 : false),
+    },
+  );
+
   const utils = trpc.useUtils();
   const update = trpc.frames.update.useMutation({
     onSuccess: () => {
@@ -22,6 +29,34 @@ export function FrameInspector({ frameId, onDeleted }: Props) {
       onDeleted();
     },
   });
+  const generate = trpc.frames.generate.useMutation({
+    onSuccess: () => {
+      utils.frames.get.invalidate({ id: frameId });
+      utils.frames.listByScene.invalidate();
+    },
+  });
+  const swap = trpc.renditions.swapFavorite.useMutation({
+    onSuccess: () => {
+      utils.frames.get.invalidate({ id: frameId });
+      utils.frames.listByScene.invalidate();
+      utils.renditions.get.invalidate();
+    },
+  });
+  const dropPrev = trpc.renditions.dropPrevious.useMutation({
+    onSuccess: () => {
+      utils.frames.get.invalidate({ id: frameId });
+      utils.frames.listByScene.invalidate();
+    },
+  });
+
+  const currentQuery = trpc.renditions.get.useQuery(
+    { id: frameQuery.data?.currentRenditionId ?? "" },
+    { enabled: !!frameQuery.data?.currentRenditionId },
+  );
+  const previousQuery = trpc.renditions.get.useQuery(
+    { id: frameQuery.data?.previousRenditionId ?? "" },
+    { enabled: !!frameQuery.data?.previousRenditionId },
+  );
 
   const [prompt, setPrompt] = useState("");
   const [overlay, setOverlay] = useState("");
@@ -43,6 +78,8 @@ export function FrameInspector({ frameId, onDeleted }: Props) {
     return <div className="text-sm text-[var(--text-muted)]">Frame not found.</div>;
   }
 
+  const frame = frameQuery.data;
+
   function save(patch: {
     imagePrompt?: string;
     textOverlay?: string;
@@ -52,14 +89,81 @@ export function FrameInspector({ frameId, onDeleted }: Props) {
     update.mutate({ id: frameId, ...patch });
   }
 
+  const isGenerating = frame.status === "generating";
+  const canGenerate = !!frame.imagePrompt?.trim() && !isGenerating;
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium">Inspector</h3>
         <span className="rounded-full bg-[var(--surface-muted)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-          {frameQuery.data.status}
+          {frame.status}
         </span>
       </div>
+
+      {(currentQuery.data || isGenerating) && (
+        <div className="space-y-2">
+          <div className="aspect-square overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-muted)]">
+            {currentQuery.data ? (
+              <img
+                src={currentQuery.data.imageUrl}
+                alt="current rendition"
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center text-xs text-[var(--text-muted)]">
+                generating…
+              </div>
+            )}
+          </div>
+          {previousQuery.data && (
+            <div className="flex items-center gap-2">
+              <div className="h-12 w-12 overflow-hidden rounded border border-[var(--border)]">
+                <img
+                  src={previousQuery.data.imageUrl}
+                  alt="previous rendition"
+                  className="h-full w-full object-cover"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => swap.mutate({ frameId })}
+                disabled={swap.isPending}
+                className="rounded-md border border-[var(--border)] px-2 py-1 text-xs hover:bg-[var(--surface-muted)] disabled:opacity-50"
+              >
+                Swap to previous
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm("Drop the previous rendition permanently?")) {
+                    dropPrev.mutate({ frameId });
+                  }
+                }}
+                className="text-xs text-[var(--text-muted)] hover:text-[var(--danger)]"
+              >
+                Drop
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={() => generate.mutate({ id: frameId })}
+        disabled={!canGenerate || generate.isPending}
+        className="w-full rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-[var(--accent-fg)] disabled:opacity-50"
+      >
+        {isGenerating
+          ? "Generating…"
+          : currentQuery.data
+            ? "Regenerate"
+            : "Generate"}
+      </button>
+      {generate.error && (
+        <div className="text-xs text-[var(--danger)]">{generate.error.message}</div>
+      )}
 
       <label className="flex flex-col gap-1">
         <span className="text-xs text-[var(--text-muted)]">Text overlay</span>

@@ -5,6 +5,7 @@ import {
   TRANSPARENCY_MODES,
 } from "../../shared/types/enums";
 import { publicProcedure, router } from "../_core/trpc";
+import { generateFrameInline } from "../services/ai/generate-frame";
 import {
   compactSceneOrder,
   createFrame,
@@ -15,6 +16,10 @@ import {
   nextFrameOrderIndex,
   updateFrame,
 } from "../services/db/frames";
+import { getProject } from "../services/db/projects";
+import { getScene } from "../services/db/scenes";
+import { getStory } from "../services/db/stories";
+import { getTemplate } from "../services/db/templates";
 
 export const framesRouter = router({
   listByScene: publicProcedure
@@ -116,5 +121,64 @@ export const framesRouter = router({
       await deleteFrame(input.id);
       if (frame) await compactSceneOrder(frame.sceneId);
       return { ok: true };
+    }),
+
+  /**
+   * Fire-and-forget: marks the frame as 'generating', returns immediately,
+   * runs Atlas generation in the background. UI polls frame.get / frames.listByScene
+   * to surface the new rendition once it lands.
+   *
+   * (A proper Inngest-backed flow with retries comes in phase 3b.)
+   */
+  generate: publicProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ input }) => {
+      if (!process.env.ATLASCLOUD_API_KEY) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "ATLASCLOUD_API_KEY not set — generation unavailable.",
+        });
+      }
+
+      const frame = await getFrame(input.id);
+      if (!frame) throw new TRPCError({ code: "NOT_FOUND", message: "Frame not found" });
+      if (!frame.imagePrompt?.trim()) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Frame has no imagePrompt. Edit the prompt before generating.",
+        });
+      }
+      if (frame.status === "generating") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Frame is already generating.",
+        });
+      }
+
+      // Resolve aspect from project settings → template defaults → fallback.
+      const scene = await getScene(frame.sceneId);
+      const story = scene ? await getStory(scene.storyId) : undefined;
+      const project = story?.projectId ? await getProject(story.projectId) : undefined;
+      const template = project ? await getTemplate(project.templateId) : undefined;
+      const aspect =
+        project?.settingsJson?.imageFormat ??
+        template?.defaultsJson.imageFormat ??
+        "1:1";
+
+      // Mark generating + queue.
+      await updateFrame(frame.id, { status: "generating" });
+
+      // Background work. Errors surface in frame.status='error' + errorMessage.
+      void (async () => {
+        try {
+          await generateFrameInline({ frameId: frame.id, aspect });
+        } catch (err) {
+          const message = (err as Error).message ?? "Unknown error";
+          console.error(`[v4 generate] frame=${frame.id} failed:`, message);
+          await updateFrame(frame.id, { status: "error" });
+        }
+      })();
+
+      return { ok: true, status: "generating" as const, aspect };
     }),
 });
