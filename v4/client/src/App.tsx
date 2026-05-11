@@ -1,5 +1,6 @@
 import { Route, Switch } from "wouter";
 import Home from "./pages/Home";
+import ProjectDetail from "./pages/ProjectDetail";
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
       <main className="mx-auto max-w-6xl px-6 py-10">
         <Switch>
           <Route path="/" component={Home} />
+          <Route path="/projects/:id" component={ProjectDetail} />
           <Route>
             <div className="text-[var(--text-muted)]">Not found.</div>
           </Route>

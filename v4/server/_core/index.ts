@@ -5,6 +5,7 @@ import { appRouter } from "../routers";
 import { db } from "./db";
 import { env } from "./env";
 import { runMigrations } from "./migrate";
+import { registerStorageProxy } from "./storageProxy";
 import { createContext } from "./trpc";
 import { serveStatic, setupVite } from "./vite";
 
@@ -19,6 +20,8 @@ async function main() {
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, version: "v4", dbUrl: env.dbUrl });
   });
+
+  registerStorageProxy(app);
 
   app.use(
     "/api/trpc",

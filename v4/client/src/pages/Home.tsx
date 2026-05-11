@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "wouter";
 import { trpc } from "../lib/trpc";
 
 export default function Home() {
@@ -92,14 +93,16 @@ export default function Home() {
         ) : (
           <ul className="mt-4 grid gap-3 sm:grid-cols-2">
             {projects.map((p) => (
-              <li
-                key={p.id}
-                className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4"
-              >
-                <div className="text-base font-medium">{p.name}</div>
-                <div className="mt-1 text-xs text-[var(--text-muted)]">
-                  {templates.find((t) => t.id === p.templateId)?.name ?? p.templateId}
-                </div>
+              <li key={p.id}>
+                <Link
+                  href={`/projects/${p.id}`}
+                  className="block rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 hover:border-[var(--accent)]"
+                >
+                  <div className="text-base font-medium">{p.name}</div>
+                  <div className="mt-1 text-xs text-[var(--text-muted)]">
+                    {templates.find((t) => t.id === p.templateId)?.name ?? p.templateId}
+                  </div>
+                </Link>
               </li>
             ))}
           </ul>
