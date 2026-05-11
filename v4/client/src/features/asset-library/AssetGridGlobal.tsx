@@ -1,6 +1,7 @@
 import { trpc } from "../../lib/trpc";
 import type { PublicAsset } from "@v4shared/types/asset-view";
 import type { AssetKind } from "@v4shared/types/enums";
+import { CharacterAssignCell } from "./CharacterAssignCell";
 
 type Props = {
   kinds?: AssetKind[];
@@ -8,7 +9,6 @@ type Props = {
 
 export function AssetGridGlobal({ kinds }: Props) {
   const query = trpc.assets.list.useQuery(kinds ? { kinds } : undefined);
-  const charactersQuery = trpc.characters.list.useQuery();
   const worldsQuery = trpc.worlds.list.useQuery();
   const utils = trpc.useUtils();
   const update = trpc.assets.update.useMutation({
@@ -19,7 +19,6 @@ export function AssetGridGlobal({ kinds }: Props) {
   });
 
   const assets: PublicAsset[] = query.data ?? [];
-  const characters = charactersQuery.data ?? [];
   const worlds = worldsQuery.data ?? [];
 
   if (query.isLoading) {
@@ -54,26 +53,7 @@ export function AssetGridGlobal({ kinds }: Props) {
               {a.kind.replace("_", " ")}
               {a.hasEmbedding ? " · embedded" : ""}
             </div>
-            <label className="flex items-center gap-1 text-[11px] text-[var(--text-muted)]">
-              <span>Character:</span>
-              <select
-                value={a.characterId ?? ""}
-                onChange={(e) =>
-                  update.mutate({
-                    id: a.id,
-                    characterId: e.target.value === "" ? null : e.target.value,
-                  })
-                }
-                className="flex-1 rounded border border-[var(--border)] bg-[var(--bg)] px-1 py-0.5 text-[11px]"
-              >
-                <option value="">—</option>
-                {characters.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <CharacterAssignCell asset={a} />
             <label className="flex items-center gap-1 text-[11px] text-[var(--text-muted)]">
               <span>World:</span>
               <select
