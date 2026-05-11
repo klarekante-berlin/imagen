@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { toast } from "../../lib/toast";
 import { trpc } from "../../lib/trpc";
 import { OutlinePreview } from "./OutlinePreview";
 
@@ -53,7 +54,10 @@ export function ScriptPaste({
         `[preview] ${result.scenes.length} scenes · ${result.usage.inputTokens} in / ${result.usage.outputTokens} out${cacheHit > 0 ? ` · cache hit ${cacheHit.toLocaleString()}` : ""}`,
       );
     },
-    onError: (err) => setError(err.message),
+    onError: (err) => {
+      setError(err.message);
+      toast.error("Preview failed", err.message);
+    },
   });
 
   if (!variantId) return null;

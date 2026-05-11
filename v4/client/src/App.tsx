@@ -1,4 +1,5 @@
 import { Link, Route, Switch, useLocation } from "wouter";
+import { CommandPalette } from "./features/cmdk/CommandPalette";
 import CharacterDetail from "./pages/CharacterDetail";
 import Characters from "./pages/Characters";
 import ContentCanvas from "./pages/ContentCanvas";
@@ -46,6 +47,9 @@ export default function App() {
             <NavLink href="/characters" label="Characters" />
             <NavLink href="/worlds" label="Worlds" />
             <NavLink href="/jobs" label="Jobs" />
+            <span className="ml-2 hidden rounded-md border border-[var(--border)] px-2 py-0.5 text-[10px] text-[var(--text-muted)] sm:inline-block">
+              ⌘K
+            </span>
           </nav>
         </div>
       </header>
@@ -65,6 +69,7 @@ export default function App() {
           </Route>
         </Switch>
       </main>
+      <CommandPalette />
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "../../lib/toast";
 import { trpc } from "../../lib/trpc";
 
 type Props = {
@@ -22,10 +23,18 @@ export function StyleAnchorPanel({ storyId, projectId }: Props) {
   };
 
   const extractStory = trpc.stories.extractStyleAnchor.useMutation({
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate();
+      toast.success("Style extracted", "Story-level anchor updated");
+    },
+    onError: (err) => toast.error("Extraction failed", err.message),
   });
   const extractProject = trpc.projects.extractStyleAnchor.useMutation({
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate();
+      toast.success("Style extracted", "Project default updated");
+    },
+    onError: (err) => toast.error("Extraction failed", err.message),
   });
   const updateStory = trpc.stories.updateStyleAnchor.useMutation({
     onSuccess: invalidate,

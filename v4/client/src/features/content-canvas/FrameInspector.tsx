@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { toast } from "../../lib/toast";
 import { trpc } from "../../lib/trpc";
 import { TRANSPARENCY_MODES, type TransparencyMode } from "@v4shared/types/enums";
 
@@ -33,7 +34,9 @@ export function FrameInspector({ frameId, onDeleted }: Props) {
     onSuccess: () => {
       utils.frames.get.invalidate({ id: frameId });
       utils.frames.listByScene.invalidate();
+      toast.info("Atlas is generating", "Watch the Jobs page or wait for the card to flip");
     },
+    onError: (err) => toast.error("Generate failed", err.message),
   });
   const swap = trpc.renditions.swapFavorite.useMutation({
     onSuccess: () => {

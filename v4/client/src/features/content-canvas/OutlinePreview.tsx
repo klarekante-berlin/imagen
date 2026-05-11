@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { toast } from "../../lib/toast";
 import { trpc } from "../../lib/trpc";
 
 type SuggestedFrame = {
@@ -38,11 +39,16 @@ export function OutlinePreview({
   const [scenes, setScenes] = useState<SuggestedScene[]>(initialScenes);
   const utils = trpc.useUtils();
   const apply = trpc.stories.applySplit.useMutation({
-    onSuccess: () => {
+    onSuccess: (result) => {
+      toast.success(
+        "Outline applied",
+        `${result.sceneCount} scene${result.sceneCount === 1 ? "" : "s"} · ${result.frameCount} frames`,
+      );
       utils.scenes.listByVariant.invalidate({ storyVariantId: variantId });
       utils.frames.listByScene.invalidate();
       onApplied();
     },
+    onError: (err) => toast.error("Apply failed", err.message),
   });
 
   function updateScene(idx: number, patch: Partial<SuggestedScene>) {
