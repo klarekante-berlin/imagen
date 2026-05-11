@@ -1,5 +1,6 @@
 import { trpc } from "../../lib/trpc";
 import type { PublicAsset } from "@v4shared/types/asset-view";
+import { CharacterAssignCell } from "./CharacterAssignCell";
 
 type Props = {
   projectId: string;
@@ -15,17 +16,10 @@ export function AssetGrid({ projectId, characterId }: Props) {
     { characterId: characterId ?? "" },
     { enabled: !!characterId },
   );
-  const charactersQuery = trpc.characters.listByProject.useQuery(
-    { projectId },
-    { enabled: !characterId },
-  );
+  // Global character list — covers the case where the user wants to assign a
+  // sheet to a character that lives in another project or in a world.
+  const charactersQuery = trpc.characters.list.useQuery();
   const utils = trpc.useUtils();
-  const update = trpc.assets.update.useMutation({
-    onSuccess: () => {
-      utils.assets.listByProject.invalidate({ projectId });
-      utils.assets.listByCharacter.invalidate();
-    },
-  });
   const remove = trpc.assets.delete.useMutation({
     onSuccess: () => {
       utils.assets.listByProject.invalidate({ projectId });
@@ -68,34 +62,13 @@ export function AssetGrid({ projectId, characterId }: Props) {
               loading="lazy"
             />
           </div>
-          <div className="p-3 space-y-2">
+          <div className="space-y-2 p-3">
             <div className="truncate text-sm font-medium">{a.name}</div>
             <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
               {a.kind.replace("_", " ")}
               {a.hasEmbedding ? " · embedded" : ""}
             </div>
-            {!characterId && (
-              <label className="flex items-center gap-1 text-[11px] text-[var(--text-muted)]">
-                <span>Character:</span>
-                <select
-                  value={a.characterId ?? ""}
-                  onChange={(e) =>
-                    update.mutate({
-                      id: a.id,
-                      characterId: e.target.value === "" ? null : e.target.value,
-                    })
-                  }
-                  className="flex-1 rounded border border-[var(--border)] bg-[var(--bg)] px-1 py-0.5 text-[11px]"
-                >
-                  <option value="">— none —</option>
-                  {characters.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
+            {!characterId && <CharacterAssignCell asset={a} attachToProjectId={projectId} />}
             {characterId && a.characterId && a.characterId !== characterId && (
               <div className="text-[11px] text-[var(--text-muted)]">
                 Also linked to: {characterName(a.characterId)}
