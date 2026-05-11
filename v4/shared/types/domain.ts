@@ -73,6 +73,11 @@ export type AssetMetadata = {
   dominantColors?: string[];
   visionConfidence?: number;
   reviewStatus?: "pending" | "approved" | "needs_review";
+  /** Pixel dimensions after upload-time normalization. */
+  width?: number;
+  height?: number;
+  /** Bytes on disk after normalization. */
+  bytes?: number;
 };
 
 export type WorldStyleTokens = {

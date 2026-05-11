@@ -17,7 +17,11 @@ import {
   setAssetEmbedding,
   updateAsset,
 } from "../services/db/assets";
-import { attach, detachAllForRef } from "../services/db/attachments";
+import {
+  attach,
+  detachAllForRef,
+  listScopeIdsForRef,
+} from "../services/db/attachments";
 import { storageDelete, storagePut } from "../services/storage";
 import { normalizeImageForRef } from "../services/storage/normalize-image";
 
@@ -165,6 +169,11 @@ export const assetsRouter = router({
         contentHash: stored.contentHash,
         visualDescription: input.visualDescription,
         tagsJson: input.tags,
+        metadataJson: {
+          width: normalized.width,
+          height: normalized.height,
+          bytes: normalized.finalBytes,
+        },
       });
 
       if (input.attachToProjectId) {
@@ -221,6 +230,23 @@ export const assetsRouter = router({
       if (removed?.imageKey) await storageDelete(removed.imageKey);
       if (removed) await detachAllForRef("asset", removed.id);
       return { ok: true };
+    }),
+
+  /** Where is this asset used? Returns project ids it's attached to plus the
+   * character it's bound to via FK. */
+  usedBy: publicProcedure
+    .input(z.object({ id: z.string() }))
+    .query(async ({ input }) => {
+      const asset = await getAsset(input.id);
+      if (!asset) throw new TRPCError({ code: "NOT_FOUND" });
+      const projectScopeIds = await listScopeIdsForRef("asset", input.id, "project");
+      const storyScopeIds = await listScopeIdsForRef("asset", input.id, "story");
+      return {
+        characterId: asset.characterId,
+        worldId: asset.worldId,
+        projectIds: projectScopeIds,
+        storyIds: storyScopeIds,
+      };
     }),
 
   search: publicProcedure

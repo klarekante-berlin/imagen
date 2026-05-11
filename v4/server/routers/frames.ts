@@ -43,18 +43,25 @@ export const framesRouter = router({
         caption: z.string().optional(),
         imagePrompt: z.string().optional(),
         transparencyMode: z.enum(TRANSPARENCY_MODES).optional(),
+        /** Copy textOverlay / caption / imagePrompt / frameType / transparency
+         * from this frame. Explicit input fields still win when provided. */
+        cloneFromFrameId: z.string().optional(),
       }),
     )
     .mutation(async ({ input }) => {
       const orderIndex = await nextFrameOrderIndex(input.sceneId);
+      const source = input.cloneFromFrameId
+        ? await getFrame(input.cloneFromFrameId)
+        : null;
       return createFrame({
         sceneId: input.sceneId,
         orderIndex,
-        frameType: input.frameType ?? "slide",
-        textOverlay: input.textOverlay,
-        caption: input.caption,
-        imagePrompt: input.imagePrompt,
-        transparencyMode: input.transparencyMode ?? "opaque",
+        frameType: input.frameType ?? source?.frameType ?? "slide",
+        textOverlay: input.textOverlay ?? source?.textOverlay ?? undefined,
+        caption: input.caption ?? source?.caption ?? undefined,
+        imagePrompt: input.imagePrompt ?? source?.imagePrompt ?? undefined,
+        transparencyMode:
+          input.transparencyMode ?? source?.transparencyMode ?? "opaque",
       });
     }),
 

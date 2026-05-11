@@ -2,7 +2,12 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { CHARACTER_ORIGINS } from "../../shared/types/enums";
 import { publicProcedure, router } from "../_core/trpc";
-import { attach, detachAllForRef } from "../services/db/attachments";
+import {
+  attach,
+  detachAllForRef,
+  listScopeIdsForRef,
+} from "../services/db/attachments";
+import { listAssetsForCharacter } from "../services/db/assets";
 import {
   createCharacter,
   deleteCharacter,
@@ -88,5 +93,28 @@ export const charactersRouter = router({
       await deleteCharacter(input.id);
       await detachAllForRef("character", input.id);
       return { ok: true };
+    }),
+
+  /** Where is this character used? Returns project ids it's attached to,
+   * its world, and the sheets bound to it via FK. */
+  usedBy: publicProcedure
+    .input(z.object({ id: z.string() }))
+    .query(async ({ input }) => {
+      const character = await getCharacter(input.id);
+      if (!character) throw new TRPCError({ code: "NOT_FOUND" });
+      const projectScopeIds = await listScopeIdsForRef(
+        "character",
+        input.id,
+        "project",
+      );
+      const storyScopeIds = await listScopeIdsForRef("character", input.id, "story");
+      const sheets = await listAssetsForCharacter(input.id);
+      return {
+        worldId: character.worldId,
+        projectIds: projectScopeIds,
+        storyIds: storyScopeIds,
+        sheetCount: sheets.length,
+        primaryAssetId: character.primaryAssetId,
+      };
     }),
 });
