@@ -4,8 +4,12 @@ import {
   FRAME_TYPES,
   TRANSPARENCY_MODES,
 } from "../../shared/types/enums";
+import { pollAllPending } from "../_core/pending-poller";
 import { publicProcedure, router } from "../_core/trpc";
-import { generateFrameInline } from "../services/ai/generate-frame";
+import {
+  listPendingFrames,
+  submitFrameForGeneration,
+} from "../services/ai/generate-frame";
 import {
   compactSceneOrder,
   createFrame,
@@ -123,13 +127,6 @@ export const framesRouter = router({
       return { ok: true };
     }),
 
-  /**
-   * Fire-and-forget: marks the frame as 'generating', returns immediately,
-   * runs Atlas generation in the background. UI polls frame.get / frames.listByScene
-   * to surface the new rendition once it lands.
-   *
-   * (A proper Inngest-backed flow with retries comes in phase 3b.)
-   */
   generate: publicProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input }) => {
@@ -148,14 +145,16 @@ export const framesRouter = router({
           message: "Frame has no imagePrompt. Edit the prompt before generating.",
         });
       }
-      if (frame.status === "generating") {
+      // Allow re-trigger if the frame is "generating" but lost its prediction id
+      // (server-restart leftover). Reject only when there's still an active
+      // Atlas prediction tracked.
+      if (frame.status === "generating" && frame.pendingPredictionId) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "Frame is already generating.",
+          message: "Frame is already generating (Atlas prediction in flight).",
         });
       }
 
-      // Resolve aspect from project settings → template defaults → fallback.
       const scene = await getScene(frame.sceneId);
       const story = scene ? await getStory(scene.storyId) : undefined;
       const project = story?.projectId ? await getProject(story.projectId) : undefined;
@@ -165,20 +164,77 @@ export const framesRouter = router({
         template?.defaultsJson.imageFormat ??
         "1:1";
 
-      // Mark generating + queue.
-      await updateFrame(frame.id, { status: "generating" });
-
-      // Background work. Errors surface in frame.status='error' + errorMessage.
-      void (async () => {
-        try {
-          await generateFrameInline({ frameId: frame.id, aspect });
-        } catch (err) {
-          const message = (err as Error).message ?? "Unknown error";
-          console.error(`[v4 generate] frame=${frame.id} failed:`, message);
-          await updateFrame(frame.id, { status: "error" });
-        }
-      })();
+      try {
+        await submitFrameForGeneration({ frameId: frame.id, aspect });
+      } catch (err) {
+        const message = (err as Error).message ?? "Unknown error";
+        await updateFrame(frame.id, { status: "error" });
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Atlas submit failed: ${message.slice(0, 240)}`,
+        });
+      }
 
       return { ok: true, status: "generating" as const, aspect };
     }),
+
+  /**
+   * Submit every eligible frame in a scene to Atlas in parallel. Skips frames
+   * already generating with a live prediction. Returns counts.
+   */
+  generateScene: publicProcedure
+    .input(z.object({ sceneId: z.string() }))
+    .mutation(async ({ input }) => {
+      if (!process.env.ATLASCLOUD_API_KEY) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "ATLASCLOUD_API_KEY not set.",
+        });
+      }
+      const scene = await getScene(input.sceneId);
+      if (!scene) throw new TRPCError({ code: "NOT_FOUND" });
+      const story = await getStory(scene.storyId);
+      const project = story?.projectId ? await getProject(story.projectId) : undefined;
+      const template = project ? await getTemplate(project.templateId) : undefined;
+      const aspect =
+        project?.settingsJson?.imageFormat ??
+        template?.defaultsJson.imageFormat ??
+        "1:1";
+
+      const frames = await listFramesForScene(input.sceneId);
+      const eligible = frames.filter(
+        (f) =>
+          f.imagePrompt?.trim() &&
+          !(f.status === "generating" && f.pendingPredictionId),
+      );
+
+      const results = await Promise.all(
+        eligible.map(async (f) => {
+          try {
+            await submitFrameForGeneration({ frameId: f.id, aspect });
+            return { id: f.id, ok: true as const };
+          } catch (err) {
+            await updateFrame(f.id, { status: "error" });
+            return { id: f.id, ok: false as const, error: (err as Error).message };
+          }
+        }),
+      );
+
+      return {
+        submitted: results.filter((r) => r.ok).length,
+        skipped: frames.length - eligible.length,
+        failed: results.filter((r) => !r.ok).length,
+        aspect,
+      };
+    }),
+
+  /**
+   * Manual sync — runs the same poll the background worker does, sharing
+   * its in-flight lock. Returns { skipped: true } if a periodic tick is
+   * already running.
+   */
+  syncPending: publicProcedure.mutation(() => pollAllPending()),
+
+  /** Frames waiting on an Atlas prediction (any story, any scene). */
+  listPending: publicProcedure.query(() => listPendingFrames()),
 });

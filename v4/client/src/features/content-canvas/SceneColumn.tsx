@@ -29,6 +29,9 @@ export function SceneColumn({
   const addFrame = trpc.frames.create.useMutation({
     onSuccess: () => utils.frames.listByScene.invalidate({ sceneId: scene.id }),
   });
+  const generateScene = trpc.frames.generateScene.useMutation({
+    onSuccess: () => utils.frames.listByScene.invalidate({ sceneId: scene.id }),
+  });
 
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(scene.title ?? "");
@@ -111,18 +114,29 @@ export function SceneColumn({
             )}
           </button>
         )}
-        <button
-          type="button"
-          onClick={() => {
-            if (confirm("Delete this scene with all its frames?")) {
-              remove.mutate({ id: scene.id });
-            }
-          }}
-          className="text-xs text-[var(--text-muted)] hover:text-[var(--danger)]"
-          title="Delete scene"
-        >
-          ×
-        </button>
+        <div className="flex flex-col items-end gap-1">
+          <button
+            type="button"
+            onClick={() => {
+              if (confirm("Delete this scene with all its frames?")) {
+                remove.mutate({ id: scene.id });
+              }
+            }}
+            className="text-xs text-[var(--text-muted)] hover:text-[var(--danger)]"
+            title="Delete scene"
+          >
+            ×
+          </button>
+          <button
+            type="button"
+            onClick={() => generateScene.mutate({ sceneId: scene.id })}
+            disabled={generateScene.isPending || frames.length === 0}
+            title="Submit every frame in this scene to Atlas in parallel"
+            className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--text-muted)] hover:text-[var(--text)] disabled:opacity-50"
+          >
+            {generateScene.isPending ? "submitting…" : "generate all"}
+          </button>
+        </div>
       </div>
 
       <div className="mt-3 flex flex-col gap-2">

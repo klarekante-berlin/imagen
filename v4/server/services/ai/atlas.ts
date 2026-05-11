@@ -3,8 +3,6 @@ import type { TransparencyMode } from "../../../shared/types/enums";
 const ATLAS_BASE = "https://api.atlascloud.ai/api/v1";
 const MODEL_TEXT = "openai/gpt-image-2/text-to-image";
 const MODEL_EDIT = "openai/gpt-image-2/edit";
-const POLL_INTERVAL_MS = 5000;
-const MAX_POLLS = 120; // 10 minutes
 
 function getKey(): string {
   const k = process.env.ATLASCLOUD_API_KEY;
@@ -12,11 +10,7 @@ function getKey(): string {
   return k;
 }
 
-/**
- * Maps a creative aspect ratio (any "W:H" string) to one of the two sizes the
- * gpt-image-2 endpoint accepts (1024×1024 or 1024×1536, plus the rotated
- * 1536×1024 for wide formats). For ratios outside these, picks the closer one.
- */
+/** Maps an arbitrary aspect to the closest size gpt-image-2 supports. */
 export function pickAtlasSize(aspect: string): string {
   const [wStr, hStr] = aspect.split(":");
   const w = Number(wStr ?? "1");
@@ -52,31 +46,26 @@ export async function atlasUploadMedia(
   return url;
 }
 
-export type AtlasGenerateInput = {
+export type AtlasSubmitInput = {
   prompt: string;
   aspect: string;
-  /** Reference image URLs. http(s) only — call atlasUploadMedia for data: URIs. */
+  /** http(s) URLs only — pre-upload local files via atlasUploadMedia. */
   referenceImageUrls?: string[];
   transparency?: TransparencyMode;
   quality?: "low" | "medium" | "high";
-  onStatus?: (status: string, elapsedSec: number) => void;
 };
 
-export type AtlasGenerateResult = {
-  outputUrl: string;
+export type AtlasSubmitResult = {
   predictionId: string;
-  elapsedSec: number;
   model: string;
 };
 
-export async function atlasGenerate(input: AtlasGenerateInput): Promise<AtlasGenerateResult> {
+/** Submits a generation request. Returns immediately with the prediction id. */
+export async function atlasSubmit(input: AtlasSubmitInput): Promise<AtlasSubmitResult> {
   const key = getKey();
   const useEdit = !!(input.referenceImageUrls && input.referenceImageUrls.length > 0);
   const refs = useEdit ? input.referenceImageUrls!.slice(0, 10) : [];
 
-  // gpt-image-2 doesn't have a native alpha mode. We pass the request through
-  // anyway and rely on the prompt to ask for a clean cut-out when transparency
-  // is requested — frame post-processing (phase 3 later) will alpha-cut it.
   const transparencyHint =
     input.transparency === "alpha"
       ? " Render the subject on a solid neutral background, ready for cut-out."
@@ -98,57 +87,48 @@ export async function atlasGenerate(input: AtlasGenerateInput): Promise<AtlasGen
     body.input_fidelity = "high";
   }
 
-  const submitRes = await fetch(`${ATLAS_BASE}/model/generateImage`, {
+  const res = await fetch(`${ATLAS_BASE}/model/generateImage`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!submitRes.ok) {
-    const err = await submitRes.text().catch(() => submitRes.statusText);
-    throw new Error(`Atlas submit failed (${submitRes.status}): ${err}`);
+  if (!res.ok) {
+    const err = await res.text().catch(() => res.statusText);
+    throw new Error(`Atlas submit failed (${res.status}): ${err}`);
   }
-  const submitJson = (await submitRes.json()) as {
-    code?: number;
-    msg?: string;
-    data?: { id?: string };
-  };
-  const predictionId = submitJson.data?.id;
+  const json = (await res.json()) as { msg?: string; data?: { id?: string } };
+  const predictionId = json.data?.id;
   if (!predictionId) {
-    throw new Error(`Atlas submit returned no prediction id: ${submitJson.msg ?? "unknown"}`);
+    throw new Error(`Atlas submit returned no id: ${json.msg ?? "unknown"}`);
   }
+  return { predictionId, model: useEdit ? MODEL_EDIT : MODEL_TEXT };
+}
 
-  const startedAt = Date.now();
-  const pollUrl = `${ATLAS_BASE}/model/prediction/${predictionId}`;
-  let lastStatus = "";
-  for (let i = 0; i < MAX_POLLS; i++) {
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-    const res = await fetch(pollUrl, { headers: { Authorization: `Bearer ${key}` } });
-    if (!res.ok) continue;
-    const data = (await res.json()) as {
-      data?: { status?: string; outputs?: string[]; error?: string };
-    };
-    const status = data.data?.status ?? "";
-    const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
-    if (status !== lastStatus) {
-      input.onStatus?.(status, elapsedSec);
-      lastStatus = status;
-    }
-    if (status === "completed") {
-      const outputUrl = data.data?.outputs?.[0];
-      if (!outputUrl) throw new Error("Atlas completed without output URL");
-      return {
-        outputUrl,
-        predictionId,
-        elapsedSec,
-        model: useEdit ? MODEL_EDIT : MODEL_TEXT,
-      };
-    }
-    if (status === "failed") {
-      throw new Error(`Atlas generation failed: ${data.data?.error ?? "unknown"}`);
-    }
+export type AtlasPollResult =
+  | { status: "queued" | "running" }
+  | { status: "completed"; outputUrl: string }
+  | { status: "failed"; error: string };
+
+/** Single poll. Caller decides how often to retry. */
+export async function atlasPoll(predictionId: string): Promise<AtlasPollResult> {
+  const key = getKey();
+  const res = await fetch(`${ATLAS_BASE}/model/prediction/${predictionId}`, {
+    headers: { Authorization: `Bearer ${key}` },
+  });
+  if (!res.ok) {
+    return { status: "running" }; // transient network issue — treat as still running
   }
-  throw new Error(`Atlas generation timed out after ${(MAX_POLLS * POLL_INTERVAL_MS) / 60000} min`);
+  const data = (await res.json()) as {
+    data?: { status?: string; outputs?: string[]; error?: string };
+  };
+  const raw = data.data?.status ?? "";
+  if (raw === "completed") {
+    const outputUrl = data.data?.outputs?.[0];
+    if (!outputUrl) return { status: "failed", error: "completed without output url" };
+    return { status: "completed", outputUrl };
+  }
+  if (raw === "failed") {
+    return { status: "failed", error: data.data?.error ?? "unknown" };
+  }
+  return { status: raw === "queued" ? "queued" : "running" };
 }

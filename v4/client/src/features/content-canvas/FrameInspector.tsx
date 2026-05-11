@@ -89,8 +89,16 @@ export function FrameInspector({ frameId, onDeleted }: Props) {
     update.mutate({ id: frameId, ...patch });
   }
 
-  const isGenerating = frame.status === "generating";
+  const hasLivePrediction = !!frame.pendingPredictionId;
+  const isGenerating = frame.status === "generating" && hasLivePrediction;
+  const isStuck = frame.status === "generating" && !hasLivePrediction;
   const canGenerate = !!frame.imagePrompt?.trim() && !isGenerating;
+  const elapsedMs = frame.pendingStartedAt
+    ? Date.now() - new Date(frame.pendingStartedAt).getTime()
+    : 0;
+  const elapsedSec = Math.floor(elapsedMs / 1000);
+  const elapsedLabel =
+    elapsedSec >= 60 ? `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s` : `${elapsedSec}s`;
 
   return (
     <div className="space-y-4">
@@ -149,6 +157,19 @@ export function FrameInspector({ frameId, onDeleted }: Props) {
         </div>
       )}
 
+      {isGenerating && (
+        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2 text-xs text-[var(--text-muted)]">
+          Atlas running · {elapsedLabel} elapsed · prediction{" "}
+          <code className="text-[10px]">{frame.pendingPredictionId?.slice(0, 12)}</code>
+        </div>
+      )}
+      {isStuck && (
+        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2 text-xs text-[var(--text-muted)]">
+          This frame was generating when the server lost track of the prediction.
+          Re-trigger to submit a fresh Atlas job.
+        </div>
+      )}
+
       <button
         type="button"
         onClick={() => generate.mutate({ id: frameId })}
@@ -157,9 +178,11 @@ export function FrameInspector({ frameId, onDeleted }: Props) {
       >
         {isGenerating
           ? "Generating…"
-          : currentQuery.data
-            ? "Regenerate"
-            : "Generate"}
+          : isStuck
+            ? "Re-trigger generation"
+            : currentQuery.data
+              ? "Regenerate"
+              : "Generate"}
       </button>
       {generate.error && (
         <div className="text-xs text-[var(--danger)]">{generate.error.message}</div>
