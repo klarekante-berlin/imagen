@@ -3,6 +3,7 @@ import { z } from "zod";
 import { STORY_KINDS } from "../../shared/types/enums";
 import type { PromptKey } from "../../shared/types/enums";
 import { publicProcedure, router } from "../_core/trpc";
+import { extractStyleFromReferences } from "../services/ai/extract-style";
 import { splitContent } from "../services/ai/split-content";
 import { detachAllForRef } from "../services/db/attachments";
 import { resolveStoryAttachmentContext } from "../services/db/story-context";
@@ -202,6 +203,71 @@ export const storiesRouter = router({
         if (fallback) await setPrimaryVariant(fallback.id);
       }
       return { ok: true };
+    }),
+
+  /**
+   * Style anchor: extract from the story's resolved reference assets (story
+   * scope ∪ project scope ∪ world-transitive characters' primary sheets), and
+   * store on the story row. Overrides the project default at generation time.
+   */
+  extractStyleAnchor: publicProcedure
+    .input(z.object({ storyId: z.string() }))
+    .mutation(async ({ input }) => {
+      if (!process.env.ANTHROPIC_API_KEY) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "ANTHROPIC_API_KEY not set.",
+        });
+      }
+      const story = await getStory(input.storyId);
+      if (!story) throw new TRPCError({ code: "NOT_FOUND" });
+      const ctx = await resolveStoryAttachmentContext(story.id, story.projectId);
+      if (ctx.attachedAssets.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Attach at least one reference image to the story (or its project) first.",
+        });
+      }
+      try {
+        const result = await extractStyleFromReferences({
+          assets: ctx.attachedAssets,
+        });
+        const updated = await updateStory(story.id, {
+          styleAnchorText: result.text,
+          styleAnchorStructuredJson: result.structured,
+          styleAnchorUpdatedAt: new Date().toISOString(),
+        });
+        return { story: updated, structured: result.structured, usage: result.usage };
+      } catch (err) {
+        const m = (err as Error).message ?? "Unknown error";
+        if (/401|authentication_error|invalid x-api-key/i.test(m)) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Anthropic rejected the API key.",
+          });
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Style extraction failed: ${m.slice(0, 240)}`,
+        });
+      }
+    }),
+
+  updateStyleAnchor: publicProcedure
+    .input(
+      z.object({
+        storyId: z.string(),
+        text: z.string().nullable(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const updated = await updateStory(input.storyId, {
+        styleAnchorText: input.text,
+        styleAnchorUpdatedAt: new Date().toISOString(),
+      });
+      if (!updated) throw new TRPCError({ code: "NOT_FOUND" });
+      return updated;
     }),
 
   /**

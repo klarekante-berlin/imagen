@@ -10,6 +10,7 @@ import {
 import type { RenditionParams } from "../../../shared/types/domain";
 import { updateCharacter } from "../db/characters";
 import { getFrame, updateFrame } from "../db/frames";
+import { getProject } from "../db/projects";
 import { createRendition, deleteRendition } from "../db/renditions";
 import { getScene } from "../db/scenes";
 import { getStory } from "../db/stories";
@@ -119,8 +120,12 @@ function buildPrompt(
   storyTitle: string,
   hasStyleRefs: boolean,
   attachedCharNames: string[],
+  styleAnchorText: string | null,
 ): string {
   const lines: string[] = [];
+  if (styleAnchorText?.trim()) {
+    lines.push(`STYLE: ${styleAnchorText.trim()}`);
+  }
   if (scene.environment) lines.push(`Setting: ${scene.environment}.`);
   if (scene.environmentLockNotes) lines.push(`Consistency: ${scene.environmentLockNotes}.`);
   if (attachedCharNames.length > 0) {
@@ -136,7 +141,7 @@ function buildPrompt(
   }
   if (hasStyleRefs) {
     lines.push(
-      "STYLE AUTHORITY: copy the rendering style, color treatment, lighting, and typography exactly from the reference images marked as style sheets.",
+      "STYLE AUTHORITY: the reference images marked as style sheets are the final word on rendering, color, lighting, and typography. Match them exactly. If they conflict with the STYLE anchor above, the images win for what they show; the anchor governs anything they don't.",
     );
   }
   lines.push(`(Story: "${storyTitle}", scene: "${scene.title ?? scene.environment ?? "scene"}".)`);
@@ -168,12 +173,21 @@ export async function submitFrameForGeneration(input: SubmitInput): Promise<void
   );
   const hasStyleRefs = refs.some((r) => r.asset.kind === "style_ref");
 
+  // Effective style anchor: story override beats project default. Either
+  // can be null and that's fine — buildPrompt just skips the STYLE line.
+  let styleAnchorText: string | null = story.styleAnchorText ?? null;
+  if (!styleAnchorText && story.projectId) {
+    const project = await getProject(story.projectId);
+    styleAnchorText = project?.styleAnchorText ?? null;
+  }
+
   const prompt = buildPrompt(
     frame,
     scene,
     story.title,
     hasStyleRefs,
     attachedCharNames,
+    styleAnchorText,
   );
 
   const refUrls: string[] = [];
