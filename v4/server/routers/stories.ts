@@ -275,7 +275,7 @@ export const storiesRouter = router({
           sourceText,
           attachedWorlds: ctx.worlds,
           attachedCharacters: ctx.characters,
-          attachedStyleAssets: ctx.styleAssets,
+          attachedStyleAssets: ctx.attachedAssets,
           model: input.model,
         });
       } catch (err) {
