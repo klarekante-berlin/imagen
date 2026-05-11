@@ -100,7 +100,13 @@ export const assetsRouter = router({
       const existing = await getAssetByContentHash(stored.contentHash);
       if (existing) {
         await storageDelete(stored.key);
-        return { asset: toPublicAsset(existing), deduplicated: true };
+        const patch: Parameters<typeof updateAsset>[1] = {};
+        if (!existing.characterId && input.characterId) patch.characterId = input.characterId;
+        if (!existing.projectId && input.projectId) patch.projectId = input.projectId;
+        const linked = Object.keys(patch).length > 0
+          ? await updateAsset(existing.id, patch)
+          : existing;
+        return { asset: toPublicAsset(linked ?? existing), deduplicated: true };
       }
 
       const asset = await createAsset({
