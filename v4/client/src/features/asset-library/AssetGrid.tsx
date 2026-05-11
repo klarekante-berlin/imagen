@@ -1,5 +1,5 @@
 import { trpc } from "../../lib/trpc";
-import type { Asset } from "../../../../drizzle/schema";
+import type { PublicAsset } from "@v4shared/types/asset-view";
 
 type Props = {
   projectId: string;
@@ -23,7 +23,7 @@ export function AssetGrid({ projectId, characterId }: Props) {
     },
   });
 
-  const assets: Asset[] = (characterId ? charQuery.data : projectQuery.data) ?? [];
+  const assets: PublicAsset[] = (characterId ? charQuery.data : projectQuery.data) ?? [];
   const loading = characterId ? charQuery.isLoading : projectQuery.isLoading;
 
   if (loading) {
@@ -56,7 +56,7 @@ export function AssetGrid({ projectId, characterId }: Props) {
             <div className="truncate text-sm font-medium">{a.name}</div>
             <div className="mt-0.5 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
               {a.kind.replace("_", " ")}
-              {a.embedding ? " · embedded" : ""}
+              {a.hasEmbedding ? " · embedded" : ""}
             </div>
             <button
               type="button"

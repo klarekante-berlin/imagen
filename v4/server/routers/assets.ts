@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { ASSET_KINDS, type AssetKind } from "../../shared/types/enums";
+import { toPublicAsset } from "../../shared/types/asset-view";
 import { publicProcedure, router } from "../_core/trpc";
 import { embedImageWithText, embedText } from "../services/ai/voyage";
 import {
@@ -12,6 +13,7 @@ import {
   listAssetsForProject,
   searchAssetsByEmbedding,
   setAssetEmbedding,
+  updateAsset,
 } from "../services/db/assets";
 import { storageDelete, storagePut } from "../services/storage";
 
@@ -50,15 +52,24 @@ export const assetsRouter = router({
         kinds: z.array(z.enum(ASSET_KINDS)).optional(),
       }),
     )
-    .query(({ input }) => listAssetsForProject(input.projectId, input.kinds)),
+    .query(async ({ input }) => {
+      const rows = await listAssetsForProject(input.projectId, input.kinds);
+      return rows.map(toPublicAsset);
+    }),
 
   listByCharacter: publicProcedure
     .input(z.object({ characterId: z.string() }))
-    .query(({ input }) => listAssetsForCharacter(input.characterId)),
+    .query(async ({ input }) => {
+      const rows = await listAssetsForCharacter(input.characterId);
+      return rows.map(toPublicAsset);
+    }),
 
   get: publicProcedure
     .input(z.object({ id: z.string() }))
-    .query(({ input }) => getAsset(input.id)),
+    .query(async ({ input }) => {
+      const row = await getAsset(input.id);
+      return row ? toPublicAsset(row) : undefined;
+    }),
 
   uploadBase64: publicProcedure
     .input(
@@ -88,9 +99,8 @@ export const assetsRouter = router({
 
       const existing = await getAssetByContentHash(stored.contentHash);
       if (existing) {
-        // Drop the freshly-written duplicate file; keep the canonical row.
         await storageDelete(stored.key);
-        return { asset: existing, deduplicated: true };
+        return { asset: toPublicAsset(existing), deduplicated: true };
       }
 
       const asset = await createAsset({
@@ -111,9 +121,14 @@ export const assetsRouter = router({
           .filter(Boolean)
           .join(". "),
       );
-      if (embedding) await setAssetEmbedding(asset.id, embedding);
+      let finalAsset = asset;
+      if (embedding) {
+        await setAssetEmbedding(asset.id, embedding);
+        const refreshed = await getAsset(asset.id);
+        if (refreshed) finalAsset = refreshed;
+      }
 
-      return { asset, deduplicated: false };
+      return { asset: toPublicAsset(finalAsset), deduplicated: false };
     }),
 
   update: publicProcedure
@@ -130,10 +145,11 @@ export const assetsRouter = router({
       const { id, tags, ...rest } = input;
       const asset = await getAsset(id);
       if (!asset) throw new TRPCError({ code: "NOT_FOUND" });
-      const updated = await import("../services/db/assets").then((m) =>
-        m.updateAsset(id, { ...rest, tagsJson: tags ?? asset.tagsJson ?? undefined }),
-      );
-      return updated;
+      const updated = await updateAsset(id, {
+        ...rest,
+        tagsJson: tags ?? asset.tagsJson ?? undefined,
+      });
+      return updated ? toPublicAsset(updated) : undefined;
     }),
 
   delete: publicProcedure
@@ -176,6 +192,6 @@ export const assetsRouter = router({
         input.topK,
         kinds,
       );
-      return hits.map((h) => ({ ...h.asset, score: h.score }));
+      return hits.map((h) => ({ ...toPublicAsset(h.asset), score: h.score }));
     }),
 });
