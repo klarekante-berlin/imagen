@@ -4,9 +4,12 @@ import type {
   Tool,
 } from "@anthropic-ai/sdk/resources/messages";
 import type {
+  Asset,
+  Character,
   Project,
   Story,
   Template,
+  World,
 } from "../../../drizzle/schema";
 import type { PromptKey } from "../../../shared/types/enums";
 import { DEFAULT_MODEL, getClaude } from "./claude";
@@ -190,8 +193,47 @@ export type SplitInput = {
   template?: Template;
   prompts: Partial<Record<PromptKey, string>>;
   sourceText: string;
+  attachedWorlds?: World[];
+  attachedCharacters?: Character[];
+  attachedStyleAssets?: Asset[];
   model?: string;
 };
+
+function formatCharacter(c: Character): string {
+  const aliases = (c.aliasesJson ?? []).join(", ");
+  const desc = c.description?.trim();
+  const parts: string[] = [`- ${c.name}`];
+  if (aliases) parts.push(`(aliases: ${aliases})`);
+  if (desc) parts.push(`— ${desc.slice(0, 200)}`);
+  return parts.join(" ");
+}
+
+function formatAsset(a: Asset): string {
+  const desc = a.visualDescription?.trim();
+  return `- ${a.name} [${a.kind}]${desc ? ` — ${desc.slice(0, 160)}` : ""}`;
+}
+
+function buildAttachmentContext(input: SplitInput): string | null {
+  const lines: string[] = [];
+  if (input.attachedWorlds && input.attachedWorlds.length > 0) {
+    lines.push("Worlds attached to this story");
+    for (const w of input.attachedWorlds) {
+      lines.push(`- ${w.name}${w.description ? ` — ${w.description.slice(0, 200)}` : ""}`);
+    }
+    lines.push("");
+  }
+  if (input.attachedCharacters && input.attachedCharacters.length > 0) {
+    lines.push("Named characters available (use exact names in scene.characters[]; only invent new ones if the script references someone not listed):");
+    for (const c of input.attachedCharacters) lines.push(formatCharacter(c));
+    lines.push("");
+  }
+  if (input.attachedStyleAssets && input.attachedStyleAssets.length > 0) {
+    lines.push("Style references attached (typography, palette, layout hints — apply their register without naming them in the output):");
+    for (const a of input.attachedStyleAssets) lines.push(formatAsset(a));
+    lines.push("");
+  }
+  return lines.length > 0 ? lines.join("\n") : null;
+}
 
 export async function splitContent(input: SplitInput): Promise<SplitResult> {
   if (!input.sourceText.trim()) {
@@ -206,12 +248,15 @@ export async function splitContent(input: SplitInput): Promise<SplitResult> {
     input.prompts,
   );
 
-  const userBlocks: ContentBlockParam[] = [
-    {
-      type: "text",
-      text: `Story title: ${input.story.title}\nStory kind: ${input.story.kind}\n\n--- SOURCE TEXT ---\n${input.sourceText}\n--- END ---\n\nCall the split_content tool with the scenes you've extracted.`,
-    },
-  ];
+  const attachmentContext = buildAttachmentContext(input);
+  const userBlocks: ContentBlockParam[] = [];
+  if (attachmentContext) {
+    userBlocks.push({ type: "text", text: attachmentContext });
+  }
+  userBlocks.push({
+    type: "text",
+    text: `Story title: ${input.story.title}\nStory kind: ${input.story.kind}\n\n--- SOURCE TEXT ---\n${input.sourceText}\n--- END ---\n\nCall the split_content tool with the scenes you've extracted.`,
+  });
 
   const response = await client.messages.create({
     model: input.model ?? DEFAULT_MODEL,

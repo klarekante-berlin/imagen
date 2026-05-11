@@ -5,6 +5,7 @@ import type { PromptKey } from "../../shared/types/enums";
 import { publicProcedure, router } from "../_core/trpc";
 import { splitContent } from "../services/ai/split-content";
 import { detachAllForRef } from "../services/db/attachments";
+import { resolveStoryAttachmentContext } from "../services/db/story-context";
 import {
   createFrame,
   listFramesForScene,
@@ -260,6 +261,9 @@ export const storiesRouter = router({
         if (rev) prompts[key] = rev.text;
       }
 
+      // Resolve attachments (worlds + their characters + style refs).
+      const ctx = await resolveStoryAttachmentContext(story.id, story.projectId);
+
       // Call Claude.
       let result;
       try {
@@ -269,6 +273,9 @@ export const storiesRouter = router({
           template,
           prompts,
           sourceText,
+          attachedWorlds: ctx.worlds,
+          attachedCharacters: ctx.characters,
+          attachedStyleAssets: ctx.styleAssets,
           model: input.model,
         });
       } catch (err) {
