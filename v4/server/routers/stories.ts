@@ -1,14 +1,19 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { STORY_KINDS } from "../../shared/types/enums";
+import type { PromptKey } from "../../shared/types/enums";
 import { publicProcedure, router } from "../_core/trpc";
+import { splitContent } from "../services/ai/split-content";
 import { detachAllForRef } from "../services/db/attachments";
 import {
   createFrame,
   listFramesForScene,
 } from "../services/db/frames";
+import { getProject } from "../services/db/projects";
+import { getPromptRevision } from "../services/db/prompts";
 import {
   createScene,
+  deleteScene,
   listScenesForVariant,
 } from "../services/db/scenes";
 import {
@@ -28,6 +33,7 @@ import {
   listStoriesForProject,
   updateStory,
 } from "../services/db/stories";
+import { getTemplate } from "../services/db/templates";
 
 async function duplicateVariantContents(
   fromVariantId: string,
@@ -195,5 +201,144 @@ export const storiesRouter = router({
         if (fallback) await setPrimaryVariant(fallback.id);
       }
       return { ok: true };
+    }),
+
+  /**
+   * Splits the story's sourceText into scenes + frames using Claude.
+   * Replaces any existing scenes/frames in the target variant.
+   * Returns the count of scenes and frames written, plus model usage.
+   */
+  split: publicProcedure
+    .input(
+      z.object({
+        storyId: z.string(),
+        variantId: z.string().optional(),
+        sourceText: z.string().optional(),
+        model: z.string().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      if (!process.env.ANTHROPIC_API_KEY) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "ANTHROPIC_API_KEY not set — splitter unavailable.",
+        });
+      }
+
+      const story = await getStory(input.storyId);
+      if (!story) throw new TRPCError({ code: "NOT_FOUND", message: "Story not found" });
+
+      // Persist any new source text the user passed in.
+      let sourceText = input.sourceText?.trim() ?? story.sourceText;
+      if (input.sourceText !== undefined && input.sourceText.trim() !== story.sourceText) {
+        const updated = await updateStory(story.id, { sourceText: input.sourceText });
+        if (updated) sourceText = updated.sourceText;
+      }
+      if (!sourceText.trim()) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Story has no sourceText to split. Paste a script first.",
+        });
+      }
+
+      const variant =
+        (input.variantId && (await getStoryVariant(input.variantId))) ||
+        (await getPrimaryVariant(story.id));
+      if (!variant || variant.storyId !== story.id) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Variant not found for this story" });
+      }
+
+      // Resolve project + template + active prompts (best-effort).
+      const project = story.projectId ? await getProject(story.projectId) : undefined;
+      const template = project ? await getTemplate(project.templateId) : undefined;
+      const activePromptIds = project?.activePromptIdsJson ?? {};
+      const prompts: Partial<Record<PromptKey, string>> = {};
+      for (const key of ["plan", "write", "style", "anticipate"] as PromptKey[]) {
+        const revId = activePromptIds[key];
+        if (!revId) continue;
+        const rev = await getPromptRevision(revId);
+        if (rev) prompts[key] = rev.text;
+      }
+
+      // Call Claude.
+      let result;
+      try {
+        result = await splitContent({
+          story,
+          project,
+          template,
+          prompts,
+          sourceText,
+          model: input.model,
+        });
+      } catch (err) {
+        const message = (err as Error).message ?? "Unknown error";
+        const trimmed = message.length > 240 ? `${message.slice(0, 240)}…` : message;
+        if (/401|authentication_error|invalid x-api-key/i.test(message)) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message:
+              "Anthropic rejected the API key. Set a valid ANTHROPIC_API_KEY in .env and restart.",
+          });
+        }
+        if (/429|rate_limit/i.test(message)) {
+          throw new TRPCError({
+            code: "TOO_MANY_REQUESTS",
+            message: "Anthropic rate-limited the request. Wait a moment and retry.",
+          });
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Splitter failed: ${trimmed}`,
+        });
+      }
+
+      // Drop existing scenes (cascading frames go along — they hang off scene_id
+      // which we drop; orphan frames would be unreachable but for tidiness we
+      // delete them too via deleteScene which already nukes the row).
+      const oldScenes = await listScenesForVariant(variant.id);
+      for (const s of oldScenes) {
+        const oldFrames = await listFramesForScene(s.id);
+        for (const f of oldFrames) {
+          await import("../services/db/frames").then((m) => m.deleteFrame(f.id));
+        }
+        await deleteScene(s.id);
+      }
+
+      // Write new scenes + frames in order.
+      let sceneCount = 0;
+      let frameCount = 0;
+      for (let si = 0; si < result.scenes.length; si++) {
+        const s = result.scenes[si]!;
+        const scene = await createScene({
+          storyId: story.id,
+          storyVariantId: variant.id,
+          orderIndex: si,
+          title: s.title,
+          environment: s.environment,
+          environmentLockNotes: s.environmentLockNotes,
+          transitionToNext: s.transitionToNext,
+          charactersJson: s.characters.map((rawName) => ({ rawName })),
+        });
+        sceneCount++;
+        for (let fi = 0; fi < s.frames.length; fi++) {
+          const f = s.frames[fi]!;
+          await createFrame({
+            sceneId: scene.id,
+            orderIndex: fi,
+            textOverlay: f.textOverlay,
+            caption: f.caption,
+            imagePrompt: f.imagePrompt,
+          });
+          frameCount++;
+        }
+      }
+
+      return {
+        sceneCount,
+        frameCount,
+        reasoning: result.reasoning,
+        usage: result.usage,
+      };
     }),
 });

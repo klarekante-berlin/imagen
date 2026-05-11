@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useRoute } from "wouter";
 import { FrameInspector } from "../features/content-canvas/FrameInspector";
 import { SceneColumn } from "../features/content-canvas/SceneColumn";
+import { ScriptPaste } from "../features/content-canvas/ScriptPaste";
 import { VariantTabs } from "../features/content-canvas/VariantTabs";
 import { trpc } from "../lib/trpc";
 
@@ -80,6 +81,14 @@ export default function ContentCanvas() {
           setActiveVariantId(id);
           setActiveFrameId(null);
         }}
+      />
+
+      <ScriptPaste
+        storyId={storyId}
+        variantId={activeVariantId}
+        initialSourceText={story.sourceText}
+        hasScenes={scenes.length > 0}
+        onSplitDone={() => setActiveFrameId(null)}
       />
 
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
