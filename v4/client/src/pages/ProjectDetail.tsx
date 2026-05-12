@@ -11,9 +11,10 @@ import { CharacterEditor } from "../features/character-studio/CharacterEditor";
 import { CharacterList } from "../features/character-studio/CharacterList";
 import { StoryList } from "../features/content-canvas/StoryList";
 import { ProjectHeader } from "../features/project/ProjectHeader";
+import { PromptsTab } from "../features/prompts/PromptsTab";
 import { trpc } from "../lib/trpc";
 
-type Tab = "contents" | "library" | "characters";
+type Tab = "contents" | "library" | "characters" | "prompts";
 
 export default function ProjectDetail() {
   const [, params] = useRoute("/projects/:id");
@@ -47,7 +48,7 @@ export default function ProjectDetail() {
 
       <div className="border-b border-[var(--border)]">
         <nav className="flex gap-6 text-sm">
-          {(["contents", "library", "characters"] as Tab[]).map((t) => (
+          {(["contents", "library", "characters", "prompts"] as Tab[]).map((t) => (
             <button
               key={t}
               type="button"
@@ -80,6 +81,8 @@ export default function ProjectDetail() {
           </AssetDropZone>
         </div>
       )}
+
+      {tab === "prompts" && <PromptsTab projectId={projectId} />}
 
       {tab === "characters" && (
         <div className="grid gap-6 lg:grid-cols-[1fr_2fr]">
