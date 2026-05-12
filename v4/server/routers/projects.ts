@@ -30,6 +30,30 @@ async function listProjectAttachedAssets(projectId: string) {
 export const projectsRouter = router({
   list: publicProcedure.query(() => listProjects()),
 
+  /** Per-project counts for the table view: stories, attached assets,
+   * attached characters. */
+  listWithCounts: publicProcedure.query(async () => {
+    const all = await listProjects();
+    const out = await Promise.all(
+      all.map(async (p) => {
+        const stories = await import("../services/db/stories").then((m) =>
+          m.listStoriesForProject(p.id),
+        );
+        const attachedAssets = await listByScope("project", p.id, "asset");
+        const attachedChars = await listByScope("project", p.id, "character");
+        const lastStory = stories[0];
+        return {
+          ...p,
+          storyCount: stories.length,
+          attachedAssetCount: attachedAssets.length,
+          attachedCharacterCount: attachedChars.length,
+          lastStoryAt: lastStory?.updatedAt ?? null,
+        };
+      }),
+    );
+    return out;
+  }),
+
   get: publicProcedure
     .input(z.object({ id: z.string() }))
     .query(({ input }) => getProject(input.id)),

@@ -20,3 +20,15 @@ export async function createTemplate(input: InsertTemplate): Promise<Template> {
   const [row] = await db.insert(templates).values(input).returning();
   return row;
 }
+
+export async function updateTemplate(
+  id: string,
+  patch: Partial<InsertTemplate>,
+): Promise<Template | undefined> {
+  const [row] = await db.update(templates).set(patch).where(eq(templates.id, id)).returning();
+  return row;
+}
+
+export async function deleteTemplate(id: string): Promise<void> {
+  await db.delete(templates).where(eq(templates.id, id));
+}
