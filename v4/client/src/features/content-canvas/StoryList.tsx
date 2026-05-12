@@ -31,10 +31,13 @@ export function StoryList({ projectId }: Props) {
     onError: (err) => toast.error("Create failed", err.message),
   });
   const remove = trpc.stories.delete.useMutation({
-    onSuccess: () => {
+    onSuccess: (r) => {
       utils.stories.listByProject.invalidate({ projectId });
       utils.stories.listByProjectWithCounts.invalidate({ projectId });
-      toast.success("Story deleted");
+      toast.success(
+        "Story deleted",
+        `${r.scenes} scenes · ${r.frames} frames · ${r.renditions} renditions removed`,
+      );
     },
     onError: (err) => toast.error("Delete failed", err.message),
   });

@@ -32,7 +32,6 @@ import {
 } from "../services/db/story-variants";
 import {
   createStory,
-  deleteStory,
   getStory,
   listStories,
   listStoriesForProject,
@@ -168,9 +167,10 @@ export const storiesRouter = router({
   delete: publicProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input }) => {
-      await deleteStory(input.id);
-      await detachAllForRef("asset", input.id); // any attachments by id (defensive)
-      return { ok: true };
+      const story = await getStory(input.id);
+      if (!story) throw new TRPCError({ code: "NOT_FOUND" });
+      const counts = await cascadeDeleteStory(input.id);
+      return { ok: true, ...counts };
     }),
 
   // ── Variants ────────────────────────────────────────────────────────────

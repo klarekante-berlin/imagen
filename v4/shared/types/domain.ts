@@ -79,6 +79,10 @@ export type AssetMetadata = {
   height?: number;
   /** Bytes on disk after normalization. */
   bytes?: number;
+  /** Name Claude read off the sheet's caption — pending UI suggestion when
+   * no existing character matched. Cleared once user accepts or dismisses. */
+  inferredCharacterName?: string;
+  inferredCharacterDismissed?: boolean;
 };
 
 export type WorldStyleTokens = {

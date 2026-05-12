@@ -36,3 +36,7 @@ export async function getPromptRevision(id: string): Promise<PromptRevision | un
     .limit(1);
   return row;
 }
+
+export async function deletePromptRevision(id: string): Promise<void> {
+  await db.delete(promptRevisions).where(eq(promptRevisions.id, id));
+}

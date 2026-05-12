@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { CHARACTER_ORIGINS } from "../../shared/types/enums";
 import { publicProcedure, router } from "../_core/trpc";
+import { mergeCharacters } from "../services/cascade";
 import {
   attach,
   detachAllForRef,
@@ -93,6 +94,34 @@ export const charactersRouter = router({
       await deleteCharacter(input.id);
       await detachAllForRef("character", input.id);
       return { ok: true };
+    }),
+
+  /**
+   * Merge `sourceId` into `targetId`: sheets, attachments, and aliases move
+   * to target; source is deleted. Errors if same id, or either missing.
+   */
+  merge: publicProcedure
+    .input(
+      z.object({
+        sourceId: z.string(),
+        targetId: z.string(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      if (input.sourceId === input.targetId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Source and target must differ",
+        });
+      }
+      try {
+        return await mergeCharacters(input.sourceId, input.targetId);
+      } catch (err) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: (err as Error).message,
+        });
+      }
     }),
 
   /** Where is this character used? Returns project ids it's attached to,

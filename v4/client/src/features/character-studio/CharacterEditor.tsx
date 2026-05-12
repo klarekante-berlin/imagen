@@ -12,7 +12,8 @@ type Props = {
   characterId: string;
   /** When set, surfaces a link to the canonical /characters/:id detail page. */
   showDetailLink?: boolean;
-  /** Called after the character is deleted (so the parent can clear selection). */
+  /** Called after the character is deleted (so the parent can clear selection).
+   * Also fires after a successful merge, since the source is deleted. */
   onDeleted?: () => void;
 };
 
@@ -46,6 +47,7 @@ export function CharacterEditor({ characterId, showDetailLink, onDeleted }: Prop
     utils.characters.usedBy.invalidate({ id });
     utils.assets.listByCharacter.invalidate({ characterId: id });
   };
+  const allCharactersQuery = trpc.characters.list.useQuery();
   const update = trpc.characters.update.useMutation({
     onSuccess: invalidate,
     onError: (err) => toast.error("Update failed", err.message),
@@ -58,6 +60,22 @@ export function CharacterEditor({ characterId, showDetailLink, onDeleted }: Prop
     },
     onError: (err) => toast.error("Delete failed", err.message),
   });
+  const merge = trpc.characters.merge.useMutation({
+    onSuccess: (r) => {
+      utils.characters.list.invalidate();
+      utils.assets.list.invalidate();
+      utils.attachments.listByScope.invalidate();
+      toast.success(
+        "Characters merged",
+        `${r.assetsMoved} sheets · ${r.attachmentsMoved} attachments · ${r.aliasesAdded} aliases added`,
+      );
+      onDeleted?.();
+    },
+    onError: (err) => toast.error("Merge failed", err.message),
+  });
+
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeTargetId, setMergeTargetId] = useState("");
 
   const c = charQuery.data;
   const [name, setName] = useState("");
@@ -250,16 +268,73 @@ export function CharacterEditor({ characterId, showDetailLink, onDeleted }: Prop
       </section>
 
       <div className="border-t border-[var(--border)] pt-3">
-        <button
-          type="button"
-          onClick={() => {
-            if (confirm(`Delete character "${c.name}"? Sheets are NOT deleted.`))
-              remove.mutate({ id });
-          }}
-          className="text-xs text-[var(--text-muted)] hover:text-[var(--danger)]"
-        >
-          Delete character
-        </button>
+        <div className="flex items-center gap-4">
+          <button
+            type="button"
+            onClick={() => {
+              if (confirm(`Delete character "${c.name}"? Sheets are NOT deleted.`))
+                remove.mutate({ id });
+            }}
+            className="text-xs text-[var(--text-muted)] hover:text-[var(--danger)]"
+          >
+            Delete character
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setMergeOpen((v) => !v);
+              setMergeTargetId("");
+            }}
+            className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]"
+          >
+            {mergeOpen ? "Cancel merge" : "Merge into…"}
+          </button>
+        </div>
+
+        {mergeOpen && (
+          <div className="mt-2 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-2 text-xs">
+            <div className="mb-1.5 text-[var(--text-muted)]">
+              Move all sheets, attachments, and aliases from <strong>{c.name}</strong>{" "}
+              into another character. This deletes <strong>{c.name}</strong>.
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={mergeTargetId}
+                onChange={(e) => setMergeTargetId(e.target.value)}
+                className="flex-1 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1"
+              >
+                <option value="">— pick target character —</option>
+                {(allCharactersQuery.data ?? [])
+                  .filter((x) => x.id !== id)
+                  .map((x) => (
+                    <option key={x.id} value={x.id}>
+                      {x.name}
+                    </option>
+                  ))}
+              </select>
+              <button
+                type="button"
+                disabled={!mergeTargetId || merge.isPending}
+                onClick={() => {
+                  const target = (allCharactersQuery.data ?? []).find(
+                    (x) => x.id === mergeTargetId,
+                  );
+                  if (!target) return;
+                  if (
+                    !confirm(
+                      `Merge "${c.name}" into "${target.name}"? "${c.name}" will be deleted.`,
+                    )
+                  )
+                    return;
+                  merge.mutate({ sourceId: id, targetId: target.id });
+                }}
+                className="rounded-md bg-[var(--accent)] px-3 py-1 font-medium text-[var(--accent-fg)] disabled:opacity-50"
+              >
+                {merge.isPending ? "Merging…" : "Merge"}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
