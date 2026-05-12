@@ -22,10 +22,6 @@ import {
   detachAllForRef,
   listScopeIdsForRef,
 } from "../services/db/attachments";
-import {
-  deleteVariantsForAsset,
-  listVariantsForAsset,
-} from "../services/db/asset-variants";
 import { createCharacter } from "../services/db/characters";
 import { storageDelete, storagePut } from "../services/storage";
 import { normalizeImageForRef } from "../services/storage/normalize-image";
@@ -393,17 +389,6 @@ export const assetsRouter = router({
       let failed = 0;
       for (const id of input.ids) {
         try {
-          const variants = await listVariantsForAsset(id);
-          for (const v of variants) {
-            if (v.imageKey) {
-              try {
-                await storageDelete(v.imageKey);
-              } catch {
-                /* swallow; logged elsewhere */
-              }
-            }
-          }
-          await deleteVariantsForAsset(id);
           const removed = await deleteAsset(id);
           if (removed?.imageKey) await storageDelete(removed.imageKey);
           if (removed) await detachAllForRef("asset", removed.id);
