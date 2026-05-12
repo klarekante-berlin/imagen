@@ -4,6 +4,7 @@ import {
   setAssetEmbedding,
   updateAsset,
 } from "../db/assets";
+import { findCharacterByNameOrAlias } from "../db/characters";
 import { categorizeAsset, type VisionUsage } from "./vision-categorize";
 import { embedImageWithText } from "./voyage";
 import { storageRead } from "../storage";
@@ -42,6 +43,22 @@ export async function applyVisionCategorization(
     new Set([...(fresh.tagsJson ?? []), ...(data.tags ?? [])].map((t) => t.toLowerCase())),
   );
 
+  // If Claude read a character name off the sheet and this asset is not
+  // already bound, either auto-bind (existing character match) or stash the
+  // name in metadata so the UI can offer "Create character X / Dismiss".
+  let autoBoundCharacterId: string | null = null;
+  let suggestedName: string | undefined;
+  const inferred = data.inferredCharacterName?.trim();
+  const isSheet = newKind === "character_sheet" || fresh.kind === "character_sheet";
+  if (inferred && isSheet && !fresh.characterId) {
+    const match = await findCharacterByNameOrAlias(inferred);
+    if (match) {
+      autoBoundCharacterId = match.id;
+    } else if (!fresh.metadataJson?.inferredCharacterDismissed) {
+      suggestedName = inferred;
+    }
+  }
+
   const mergedMetadata = {
     ...(fresh.metadataJson ?? {}),
     pose: data.pose ?? fresh.metadataJson?.pose,
@@ -50,6 +67,7 @@ export async function applyVisionCategorization(
     dominantColors: data.dominantColors ?? fresh.metadataJson?.dominantColors,
     visionConfidence: data.kindConfidence,
     reviewStatus: data.kindConfidence >= 80 ? ("approved" as const) : ("needs_review" as const),
+    inferredCharacterName: suggestedName,
     tagAxes: {
       ...(fresh.metadataJson?.tagAxes ?? {}),
       mood: data.mood ?? fresh.metadataJson?.tagAxes?.mood,
@@ -59,6 +77,7 @@ export async function applyVisionCategorization(
 
   const updated = await updateAsset(assetId, {
     kind: newKind,
+    characterId: autoBoundCharacterId ?? fresh.characterId,
     visualDescription: data.visualDescription,
     tagsJson: mergedTags,
     metadataJson: mergedMetadata,

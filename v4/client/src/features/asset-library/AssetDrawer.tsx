@@ -44,6 +44,20 @@ export function AssetDrawer({ asset, onClose }: Props) {
     },
     onError: (err) => toast.error("Categorize failed", err.message),
   });
+  const acceptSuggestion = trpc.assets.acceptCharacterSuggestion.useMutation({
+    onSuccess: (res) => {
+      invalidate();
+      utils.characters.list.invalidate();
+      toast.success("Character created and bound", `New character: ${res.character.name}`);
+    },
+    onError: (err) => toast.error("Bind failed", err.message),
+  });
+  const dismissSuggestion = trpc.assets.dismissCharacterSuggestion.useMutation({
+    onSuccess: () => {
+      invalidate();
+      toast.note("Suggestion dismissed");
+    },
+  });
 
   const [name, setName] = useState(asset.name);
   const [description, setDescription] = useState(asset.visualDescription ?? "");
@@ -97,6 +111,35 @@ export function AssetDrawer({ asset, onClose }: Props) {
           <div className="aspect-square overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-muted)]">
             <img src={asset.imageUrl} alt={asset.name} className="h-full w-full object-contain" />
           </div>
+
+          {meta?.inferredCharacterName && !asset.characterId && (
+            <div className="rounded-md border border-[var(--accent)] bg-[var(--accent-tint,#fffbe6)] p-2.5 text-xs">
+              <div className="font-medium">
+                Vision read “{meta.inferredCharacterName}” off this sheet — bind it?
+              </div>
+              <div className="mt-1 text-[var(--text-muted)]">
+                Creates a new character with that name and binds this asset as its sheet.
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={acceptSuggestion.isPending}
+                  onClick={() => acceptSuggestion.mutate({ assetId: asset.id })}
+                  className="rounded-md bg-[var(--accent)] px-2.5 py-1 text-xs font-medium text-[var(--accent-fg)] disabled:opacity-50"
+                >
+                  Create “{meta.inferredCharacterName}”
+                </button>
+                <button
+                  type="button"
+                  disabled={dismissSuggestion.isPending}
+                  onClick={() => dismissSuggestion.mutate({ assetId: asset.id })}
+                  className="rounded-md border border-[var(--border)] px-2.5 py-1 text-xs hover:bg-[var(--surface-muted)] disabled:opacity-50"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-2 text-[11px] text-[var(--text-muted)]">
             <div>

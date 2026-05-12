@@ -37,6 +37,20 @@ export async function listFloatingCharacters(): Promise<Character[]> {
     .orderBy(characters.name);
 }
 
+/** Case-insensitive match on name or any alias. Returns the first hit. */
+export async function findCharacterByNameOrAlias(
+  name: string,
+): Promise<Character | undefined> {
+  const needle = name.trim().toLowerCase();
+  if (!needle) return undefined;
+  const all = await db.select().from(characters);
+  return all.find((c) => {
+    if (c.name.trim().toLowerCase() === needle) return true;
+    const aliases = c.aliasesJson ?? [];
+    return aliases.some((a) => a.trim().toLowerCase() === needle);
+  });
+}
+
 export async function getCharacter(id: string): Promise<Character | undefined> {
   const [row] = await db.select().from(characters).where(eq(characters.id, id)).limit(1);
   return row;
