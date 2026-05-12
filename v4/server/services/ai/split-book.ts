@@ -184,54 +184,68 @@ export async function splitBook(
     const cast = manuscript.extraCharacters
       .map((c) => `${c.name}: ${c.description}`)
       .join("\n");
-    const payload = pending.map((p) => ({
-      section_id: p.id,
-      chapter: p.chapterTitle ?? "",
-      section_kind: p.section.kind,
-      visual_guidance: SECTION_VISUAL_GUIDE[p.section.kind],
-      heading: p.section.headingText,
-      text: p.section.rawText,
-    }));
+    // Chunk pending into batches so the response fits inside max_tokens.
+    // 25 sections * ~250 tokens/prompt ≈ 6.2k output tokens — comfortably
+    // under the per-call budget while still amortizing the cached prompt.
+    const CHUNK = 25;
+    const collected = new Map<string, string>();
+    for (let off = 0; off < pending.length; off += CHUNK) {
+      const slice = pending.slice(off, off + CHUNK);
+      const payload = slice.map((p) => ({
+        section_id: p.id,
+        chapter: p.chapterTitle ?? "",
+        section_kind: p.section.kind,
+        visual_guidance: SECTION_VISUAL_GUIDE[p.section.kind],
+        heading: p.section.headingText,
+        text: p.section.rawText.slice(0, 1500),
+      }));
 
-    const system: TextBlockParam[] = [
-      { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-    ];
-    const userBlock: ContentBlockParam = {
-      type: "text",
-      text:
-        `Book title: ${manuscript.title || "(untitled)"}\n\n` +
-        (cast ? `Character cast:\n${cast}\n\n` : "") +
-        `Sections needing an imagePrompt:\n${JSON.stringify(payload, null, 2)}`,
-    };
-    const client = getClaude();
-    const response = await client.messages.create({
-      model: opts.model ?? DEFAULT_MODEL,
-      max_tokens: 8000,
-      system,
-      tools: [WRITE_TOOL],
-      tool_choice: { type: "tool", name: "write_section_prompts" },
-      messages: [{ role: "user", content: [userBlock] }],
-    });
-    const toolUse = response.content.find((c) => c.type === "tool_use");
-    if (!toolUse || toolUse.type !== "tool_use") {
-      throw new Error("Claude did not return write_section_prompts.");
+      const system: TextBlockParam[] = [
+        { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+      ];
+      const userBlock: ContentBlockParam = {
+        type: "text",
+        text:
+          `Book title: ${manuscript.title || "(untitled)"}\n\n` +
+          (cast ? `Character cast:\n${cast}\n\n` : "") +
+          `Sections needing an imagePrompt:\n${JSON.stringify(payload, null, 2)}`,
+      };
+      const client = getClaude();
+      const response = await client.messages.create({
+        model: opts.model ?? DEFAULT_MODEL,
+        max_tokens: 16000,
+        system,
+        tools: [WRITE_TOOL],
+        tool_choice: { type: "tool", name: "write_section_prompts" },
+        messages: [{ role: "user", content: [userBlock] }],
+      });
+      const toolUse = response.content.find((c) => c.type === "tool_use");
+      if (!toolUse || toolUse.type !== "tool_use") {
+        console.warn(
+          `[v4 splitBook] Claude returned no tool_use for chunk ${off}..${off + slice.length} — falling back to visual guide.`,
+        );
+      } else {
+        const out = toolUse.input as {
+          prompts?: Array<{ section_id?: string; imagePrompt?: string }>;
+        };
+        for (const p of out.prompts ?? []) {
+          if (p.section_id && p.imagePrompt) {
+            collected.set(p.section_id, p.imagePrompt);
+          }
+        }
+      }
+      usage.inputTokens += response.usage.input_tokens;
+      usage.outputTokens += response.usage.output_tokens;
     }
-    const out = toolUse.input as {
-      prompts: Array<{ section_id: string; imagePrompt: string }>;
-    };
-    const byId = new Map(out.prompts.map((p) => [p.section_id, p.imagePrompt]));
+
     for (let i = 0; i < pending.length; i++) {
       const p = pending[i]!;
       const fIdx = frames.findIndex((f) => f.sourceSection === p.section);
       if (fIdx >= 0) {
         frames[fIdx]!.imagePrompt =
-          byId.get(p.id) ?? SECTION_VISUAL_GUIDE[p.section.kind];
+          collected.get(p.id) ?? SECTION_VISUAL_GUIDE[p.section.kind];
       }
     }
-    usage = {
-      inputTokens: response.usage.input_tokens,
-      outputTokens: response.usage.output_tokens,
-    };
   }
 
   // Pass 3 — optional chapter openers.
