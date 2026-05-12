@@ -116,6 +116,11 @@ export type FrameMetadata = {
   didacticRole?: string;
 };
 
+/** Maps a manuscript-side character name (from image_prompts.json.characters
+ * or from the heft text) to a library character id. `null` means user
+ * intentionally left it unmapped — the name will be stripped from prompts. */
+export type StoryCastMapping = Record<string, string | null>;
+
 export type {
   AssetKind,
   AssetVariantKind,

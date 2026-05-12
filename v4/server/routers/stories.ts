@@ -8,6 +8,11 @@ import { resolveStoryReferenceAssets } from "../services/ai/reference-resolver";
 import { splitContent } from "../services/ai/split-content";
 import { splitBook } from "../services/ai/split-book";
 import { parseBookManuscript } from "../services/ingest/book-manuscript";
+import {
+  resolveCastNameMapping,
+  sanitizeBookPrompt,
+} from "../services/ai/sanitize-book-prompt";
+import type { CastPoolEntry } from "../services/ai/suggest-page-cast";
 import { cascadeDeleteStory } from "../services/cascade";
 import { detachAllForRef } from "../services/db/attachments";
 import { resolveStoryAttachmentContext } from "../services/db/story-context";
@@ -39,6 +44,34 @@ import {
   updateStory,
 } from "../services/db/stories";
 import { getTemplate } from "../services/db/templates";
+
+async function buildCastPool(
+  castMapping: Record<string, string | null>,
+  bonusIds: string[],
+): Promise<CastPoolEntry[]> {
+  const charactersModule = await import("../services/db/characters");
+  const all = await charactersModule.listAllCharacters();
+  const byId = new Map(all.map((c) => [c.id, c]));
+  const aliasesById = new Map<string, string[]>();
+  for (const [manuscriptName, charId] of Object.entries(castMapping)) {
+    if (!charId) continue;
+    if (!aliasesById.has(charId)) aliasesById.set(charId, []);
+    aliasesById.get(charId)!.push(manuscriptName);
+  }
+  const ids = new Set<string>([...Array.from(aliasesById.keys()), ...bonusIds]);
+  const out: CastPoolEntry[] = [];
+  for (const id of Array.from(ids)) {
+    const c = byId.get(id);
+    if (!c) continue;
+    out.push({
+      id: c.id,
+      name: c.name,
+      description: c.description ?? undefined,
+      aliases: aliasesById.get(c.id) ?? [],
+    });
+  }
+  return out;
+}
 
 async function duplicateVariantContents(
   fromVariantId: string,
@@ -522,6 +555,12 @@ export const storiesRouter = router({
         imagePromptsJson: z.any().optional(),
         includeChapterOpeners: z.boolean().optional(),
         autoFrontBackMatter: z.boolean().optional(),
+        /** Manuscript character name → library character id. Drives the
+         * per-page cast suggestion and the sanitizer at generate time. */
+        castMapping: z.record(z.string(), z.string().nullable()).optional(),
+        /** Extra library character ids (e.g. pets) outside the manuscript
+         * cast that should also be considered for page assignment. */
+        bonusCastIds: z.array(z.string()).optional(),
         model: z.string().optional(),
       }),
     )
@@ -560,10 +599,20 @@ export const storiesRouter = router({
         });
       }
 
+      // Build cast pool from castMapping + bonusCastIds.
+      let castPool: Awaited<ReturnType<typeof buildCastPool>> = [];
+      if (
+        (input.castMapping && Object.values(input.castMapping).some((id) => id)) ||
+        (input.bonusCastIds && input.bonusCastIds.length > 0)
+      ) {
+        castPool = await buildCastPool(input.castMapping ?? {}, input.bonusCastIds ?? []);
+      }
+
       try {
         const result = await splitBook(parsed, {
           includeChapterOpeners: input.includeChapterOpeners,
           autoFrontBackMatter: input.autoFrontBackMatter,
+          castPool: castPool.length > 0 ? castPool : undefined,
           model: input.model,
         });
         return {
@@ -579,6 +628,7 @@ export const storiesRouter = router({
             imagePrompt: f.imagePrompt,
             caption: f.caption,
             origin: f.origin,
+            cast: f.cast,
             jsonMetadata: f.jsonEntry
               ? {
                   negativePrompt: f.jsonEntry.negative_prompt,
@@ -616,6 +666,7 @@ export const storiesRouter = router({
       z.object({
         storyId: z.string(),
         variantId: z.string().optional(),
+        castMapping: z.record(z.string(), z.string().nullable()).optional(),
         frames: z.array(
           z.object({
             sectionKind: z.enum(SECTION_KINDS),
@@ -623,6 +674,7 @@ export const storiesRouter = router({
             chapterTitle: z.string().nullable(),
             imagePrompt: z.string().min(1),
             caption: z.string().optional(),
+            cast: z.array(z.string()).optional(),
             jsonMetadata: z
               .object({
                 negativePrompt: z.string().optional(),
@@ -650,6 +702,31 @@ export const storiesRouter = router({
         (await getPrimaryVariant(story.id));
       if (!variant || variant.storyId !== story.id) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Variant not found" });
+      }
+
+      // Persist the cast mapping on the story.
+      if (input.castMapping !== undefined) {
+        await updateStory(story.id, { castMappingJson: input.castMapping });
+      }
+
+      // Wire story-scoped character attachments for every unique character
+      // referenced (mapped + per-page casts), so the reference resolver picks
+      // them up at generate time.
+      const { attach } = await import("../services/db/attachments");
+      const allRefIds = new Set<string>();
+      for (const [, charId] of Object.entries(input.castMapping ?? {})) {
+        if (charId) allRefIds.add(charId);
+      }
+      for (const f of input.frames) {
+        for (const id of f.cast ?? []) allRefIds.add(id);
+      }
+      for (const refId of Array.from(allRefIds)) {
+        await attach({
+          scope: "story",
+          scopeId: story.id,
+          ref: "character",
+          refId,
+        });
       }
 
       // Wipe existing scenes + frames for this variant.
@@ -682,11 +759,80 @@ export const storiesRouter = router({
           caption: f.caption,
           imagePrompt: f.imagePrompt,
           metadataJson: f.jsonMetadata ?? undefined,
+          castJson: f.cast && f.cast.length > 0 ? f.cast : undefined,
         });
         frameCount++;
       }
 
       return { sceneCount, frameCount };
+    }),
+
+  /**
+   * Book-only: walks every frame of the active variant and re-applies the
+   * sanitizer to its imagePrompt using the current castMappingJson +
+   * frame.castJson. Does NOT regenerate. Cheap, no LLM call.
+   */
+  resanitizeBookPrompts: publicProcedure
+    .input(z.object({ storyId: z.string(), variantId: z.string().optional() }))
+    .mutation(async ({ input }) => {
+      const story = await getStory(input.storyId);
+      if (!story) throw new TRPCError({ code: "NOT_FOUND", message: "Story not found" });
+      const variant =
+        (input.variantId && (await getStoryVariant(input.variantId))) ||
+        (await getPrimaryVariant(story.id));
+      if (!variant || variant.storyId !== story.id) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Variant not found" });
+      }
+      const charactersModule = await import("../services/db/characters");
+      const allChars = await charactersModule.listAllCharacters();
+      const idToName = new Map(allChars.map((c) => [c.id, c.name]));
+      const castNameMapping = resolveCastNameMapping(
+        story.castMappingJson,
+        idToName,
+      );
+
+      const scenes = await listScenesForVariant(variant.id);
+      const framesModule = await import("../services/db/frames");
+      let touched = 0;
+      let unchanged = 0;
+      for (const sc of scenes) {
+        const frames = await framesModule.listFramesForScene(sc.id);
+        for (const f of frames) {
+          const pageCastIds = f.castJson ?? [];
+          const pageCastNames = pageCastIds
+            .map((id) => idToName.get(id))
+            .filter((n): n is string => !!n);
+          const next = sanitizeBookPrompt({
+            originalPrompt: f.imagePrompt ?? "",
+            castNameMapping,
+            pageCastNames,
+          });
+          if (next !== f.imagePrompt) {
+            await framesModule.updateFrame(f.id, { imagePrompt: next });
+            touched++;
+          } else {
+            unchanged++;
+          }
+        }
+      }
+      return { touched, unchanged };
+    }),
+
+  /** Update castMappingJson on a story without re-running split. */
+  updateStoryCast: publicProcedure
+    .input(
+      z.object({
+        storyId: z.string(),
+        castMapping: z.record(z.string(), z.string().nullable()),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const story = await getStory(input.storyId);
+      if (!story) throw new TRPCError({ code: "NOT_FOUND" });
+      const updated = await updateStory(story.id, {
+        castMappingJson: input.castMapping,
+      });
+      return updated ?? story;
     }),
 
   /**

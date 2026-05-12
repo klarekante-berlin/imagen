@@ -87,6 +87,22 @@ export const framesRouter = router({
       return updated;
     }),
 
+  /** Book-only: which library characters appear on this specific page. */
+  updateCast: publicProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        characterIds: z.array(z.string()),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const updated = await updateFrame(input.id, {
+        castJson: input.characterIds.length > 0 ? input.characterIds : null,
+      });
+      if (!updated) throw new TRPCError({ code: "NOT_FOUND" });
+      return updated;
+    }),
+
   /**
    * Move a frame to a target scene at a target position. Renumbers source and
    * destination scenes after the move to keep order indices contiguous.

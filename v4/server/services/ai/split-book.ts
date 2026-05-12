@@ -18,6 +18,9 @@ export type BookSplitOptions = {
   includeChapterOpeners?: boolean;
   /** Append Cover (start) / ToC (after cover) / Endpage (end). Default true. */
   autoFrontBackMatter?: boolean;
+  /** Cast pool to feed suggest-page-cast. When omitted, per-page cast is
+   * skipped and frames get cast=[]. */
+  castPool?: import("./suggest-page-cast").CastPoolEntry[];
   model?: string;
 };
 
@@ -36,6 +39,10 @@ export type BookFrameSpec = {
   jsonEntry: ImagePromptEntry | null;
   /** Used for the UI badge: how this frame was produced. */
   origin: "json" | "claude" | "auto";
+  /** Library character ids that appear on this page. Set by suggestPageCast
+   * when a cast pool is supplied; otherwise empty (meaning "use story
+   * default" at generate time). */
+  cast: string[];
 };
 
 export type BookSplitResult = {
@@ -162,6 +169,7 @@ export async function splitBook(
         caption: s.rawText,
         jsonEntry: m,
         origin: "json",
+        cast: [],
       });
     } else {
       pending.push({ id: `s${i}`, section: s, chapterTitle: ct });
@@ -174,6 +182,7 @@ export async function splitBook(
         caption: s.rawText,
         jsonEntry: null,
         origin: "claude",
+        cast: [],
       });
     }
   }
@@ -263,6 +272,7 @@ export async function splitBook(
           caption: "",
           jsonEntry: null,
           origin: "auto",
+          cast: [],
         });
         prevChapter = f.chapterTitle;
       }
@@ -283,6 +293,7 @@ export async function splitBook(
       caption: "",
       jsonEntry: null,
       origin: "auto",
+      cast: [],
     });
     frames.unshift({
       sourceSection: null,
@@ -293,6 +304,7 @@ export async function splitBook(
       caption: "",
       jsonEntry: null,
       origin: "auto",
+      cast: [],
     });
     frames.push({
       sourceSection: null,
@@ -303,10 +315,40 @@ export async function splitBook(
       caption: "",
       jsonEntry: null,
       origin: "auto",
+      cast: [],
     });
   }
 
-  // Pass 5 — pageNumber assignment. Cover/ToC/Endpage stay null; everything
+  // Pass 5 — per-page cast suggestion (only if a pool was provided).
+  if (opts.castPool && opts.castPool.length > 0) {
+    const { suggestPageCast } = await import("./suggest-page-cast");
+    const pages = frames.map((f, idx) => ({
+      id: `f${idx}`,
+      sectionKind: f.sectionKind,
+      chapter: f.chapterTitle ?? undefined,
+      text: f.caption || f.imagePrompt.slice(0, 600),
+    }));
+    try {
+      const r = await suggestPageCast({
+        pool: opts.castPool,
+        pages,
+        model: opts.model,
+      });
+      const byId = new Map(r.suggestions.map((s) => [s.pageId, s.characterIds]));
+      for (let i = 0; i < frames.length; i++) {
+        const ids = byId.get(`f${i}`) ?? [];
+        frames[i]!.cast = ids;
+      }
+      usage.inputTokens += r.usage.inputTokens;
+      usage.outputTokens += r.usage.outputTokens;
+    } catch (err) {
+      console.warn(
+        `[v4 splitBook] page-cast suggestion failed (continuing with empty casts): ${(err as Error).message}`,
+      );
+    }
+  }
+
+  // Pass 6 — pageNumber assignment. Cover/ToC/Endpage stay null; everything
   // else numbers from 1 in order.
   let n = 1;
   const NUMBERABLE: SectionKind[] = [

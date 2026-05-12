@@ -30,6 +30,7 @@ import type {
   RenditionParams,
   SceneCharacterRef,
   SectionKind,
+  StoryCastMapping,
   StoryKind,
   StoryStatus,
   TagAxes,
@@ -229,6 +230,10 @@ export const stories = sqliteTable(
     styleAnchorText: text("style_anchor_text"),
     styleAnchorStructuredJson: text("style_anchor_structured_json", { mode: "json" }),
     styleAnchorUpdatedAt: text("style_anchor_updated_at"),
+    /** Book-only: maps a manuscript character name (e.g. "Mika") to a
+     * library character id. Drives prompt sanitization + per-page cast. */
+    castMappingJson: text("cast_mapping_json", { mode: "json" })
+      .$type<StoryCastMapping>(),
     createdAt: text("created_at").notNull().default(now),
     updatedAt: text("updated_at").notNull().default(now),
   },
@@ -312,6 +317,10 @@ export const frames = sqliteTable(
     /** Bag for hand-tuned book-page provenance (negative_prompt, aspect_ratio,
      * style_refs, didactic_role) plus any future per-frame metadata. */
     metadataJson: text("metadata_json", { mode: "json" }).$type<FrameMetadata>(),
+    /** Book-only: library character ids that appear on this specific page.
+     * Subset of story.castMappingJson values + bonus cast. Drives per-page
+     * reference resolution + sanitized "Characters in this image:" line. */
+    castJson: text("cast_json", { mode: "json" }).$type<string[]>(),
     createdAt: text("created_at").notNull().default(now),
     updatedAt: text("updated_at").notNull().default(now),
   },
