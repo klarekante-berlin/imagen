@@ -231,7 +231,58 @@ export async function pollPendingFrame(frameId: string): Promise<Frame["status"]
     console.error(`[v4 poller] CDN download failed for ${frame.id}: ${imgRes.status}`);
     return "generating";
   }
-  const buffer = Buffer.from(await imgRes.arrayBuffer());
+  const rawBuffer: Buffer = Buffer.from(await imgRes.arrayBuffer());
+  let buffer: Buffer = rawBuffer;
+  let rawIllustrationKey: string | undefined;
+  let rawIllustrationUrl: string | undefined;
+
+  // Book post-composition: render the heft text onto the page using sharp +
+  // SVG. The Atlas output becomes just the illustration band; the page text
+  // sits in a typographic panel below (or as an overlay for cover/endpage).
+  const scene = await getScene(frame.sceneId);
+  const story = scene ? await getStory(scene.storyId) : null;
+  if (story?.kind === "book" && scene?.sectionKind) {
+    try {
+      const { composeBookPage } = await import("../post-compose/book-page");
+      let chapters: string[] | undefined;
+      if (scene.sectionKind === "toc") {
+        const variantId = scene.storyVariantId;
+        if (variantId) {
+          const { listScenesForVariant } = await import("../db/scenes");
+          const all = await listScenesForVariant(variantId);
+          chapters = Array.from(
+            new Set(
+              all
+                .map((s) => s.chapterTitle)
+                .filter((c): c is string => !!c && c !== "(Front matter)"),
+            ),
+          );
+        }
+      }
+      buffer = await composeBookPage({
+        illustrationBuffer: rawBuffer,
+        pageText: frame.caption ?? "",
+        sectionKind: scene.sectionKind,
+        pageNumber: scene.pageNumber ?? null,
+        chapterTitle: scene.chapterTitle ?? null,
+        bookTitle: story.title,
+        chapters,
+      });
+      // Keep the raw illustration around so the user can re-run compose later
+      // (e.g. after editing the heft caption) without burning an Atlas call.
+      const rawStored = await storagePut(
+        `renditions/${frame.sceneId}/${frame.id}-${Date.now()}-raw.jpg`,
+        rawBuffer,
+      );
+      rawIllustrationKey = rawStored.key;
+      rawIllustrationUrl = rawStored.url;
+    } catch (err) {
+      console.warn(
+        `[v4 poller] book compose failed for ${frame.id}, falling back to raw illustration: ${(err as Error).message}`,
+      );
+    }
+  }
+
   const stored = await storagePut(
     `renditions/${frame.sceneId}/${frame.id}-${Date.now()}.jpg`,
     buffer,
@@ -241,6 +292,8 @@ export async function pollPendingFrame(frameId: string): Promise<Frame["status"]
     frameId: frame.id,
     imageKey: stored.key,
     imageUrl: stored.url,
+    rawIllustrationKey,
+    rawIllustrationUrl,
     model: frame.pendingModel ?? "unknown",
     paramsJson: frame.pendingParamsJson,
   });

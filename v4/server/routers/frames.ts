@@ -262,6 +262,28 @@ export const framesRouter = router({
    */
   syncPending: publicProcedure.mutation(() => pollAllPending()),
 
+  /**
+   * Book-only: re-run composeBookPage against the frame's current rendition
+   * using the latest scene metadata + frame.caption. Reuses the stored raw
+   * illustration so no Atlas call is needed.
+   */
+  recomposeBookPage: publicProcedure
+    .input(z.object({ frameId: z.string() }))
+    .mutation(async ({ input }) => {
+      const { recomposeBookPageForFrame } = await import(
+        "../services/post-compose/recompose-frame"
+      );
+      try {
+        await recomposeBookPageForFrame(input.frameId);
+        return { ok: true };
+      } catch (err) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: (err as Error).message,
+        });
+      }
+    }),
+
   /** Frames waiting on an Atlas prediction (any story, any scene). */
   listPending: publicProcedure.query(() => listPendingFrames()),
 
