@@ -1,12 +1,119 @@
 import { useEffect, useState } from "react";
 import { Link, useRoute } from "wouter";
+import type { Scene } from "../../../drizzle/schema";
 import { AttachmentBar } from "../features/content-canvas/AttachmentBar";
 import { FrameInspector } from "../features/content-canvas/FrameInspector";
+import { ManuscriptUpload } from "../features/content-canvas/ManuscriptUpload";
 import { SceneColumn } from "../features/content-canvas/SceneColumn";
 import { ScriptPaste } from "../features/content-canvas/ScriptPaste";
 import { StyleAnchorPanel } from "../features/content-canvas/StyleAnchorPanel";
 import { VariantTabs } from "../features/content-canvas/VariantTabs";
 import { trpc } from "../lib/trpc";
+
+type MoveFrameMutation = ReturnType<typeof trpc.frames.move.useMutation>;
+type AddSceneMutation = ReturnType<typeof trpc.scenes.create.useMutation>;
+
+function renderFlatCanvas(
+  scenes: Scene[],
+  activeFrameId: string | null,
+  setActiveFrameId: (id: string | null) => void,
+  moveFrame: MoveFrameMutation,
+  activeVariantId: string | null,
+  addScene: AddSceneMutation,
+) {
+  return (
+    <div className="flex items-start gap-4 pb-2">
+      {scenes.map((scene) => (
+        <SceneColumn
+          key={scene.id}
+          scene={scene}
+          activeFrameId={activeFrameId}
+          onSelectFrame={setActiveFrameId}
+          onFrameDragStart={() => {}}
+          onDropFrame={(frameId, targetSceneId, targetIndex) => {
+            moveFrame.mutate({ frameId, targetSceneId, targetIndex });
+          }}
+        />
+      ))}
+      {activeVariantId && (
+        <button
+          type="button"
+          onClick={() => addScene.mutate({ storyVariantId: activeVariantId })}
+          disabled={addScene.isPending}
+          className="flex h-12 w-72 flex-shrink-0 items-center justify-center rounded-md border border-dashed border-[var(--border)] text-sm text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)] disabled:opacity-50"
+        >
+          + Scene
+        </button>
+      )}
+    </div>
+  );
+}
+
+function renderBookCanvas(
+  scenes: Scene[],
+  activeFrameId: string | null,
+  setActiveFrameId: (id: string | null) => void,
+  moveFrame: MoveFrameMutation,
+  activeVariantId: string | null,
+  addScene: AddSceneMutation,
+) {
+  // Group consecutive scenes by chapterTitle/sectionKind so each chapter gets
+  // its own banner row. Frontmatter/backmatter use sectionKind as the heading.
+  const groups: Array<{ heading: string; scenes: Scene[] }> = [];
+  let lastHeading = "__init__";
+  for (const s of scenes) {
+    const heading =
+      s.chapterTitle ??
+      (s.sectionKind === "cover"
+        ? "Front cover"
+        : s.sectionKind === "toc"
+          ? "Table of contents"
+          : s.sectionKind === "endpage"
+            ? "Endpage"
+            : "Pages");
+    if (heading !== lastHeading) {
+      groups.push({ heading, scenes: [] });
+      lastHeading = heading;
+    }
+    groups[groups.length - 1]!.scenes.push(s);
+  }
+
+  return (
+    <div className="space-y-4">
+      {groups.map((g, gi) => (
+        <section key={gi}>
+          <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+            {g.heading}
+          </div>
+          <div className="flex items-start gap-4 pb-2">
+            {g.scenes.map((scene) => (
+              <SceneColumn
+                key={scene.id}
+                scene={scene}
+                activeFrameId={activeFrameId}
+                onSelectFrame={setActiveFrameId}
+                onFrameDragStart={() => {}}
+                onDropFrame={(frameId, targetSceneId, targetIndex) => {
+                  moveFrame.mutate({ frameId, targetSceneId, targetIndex });
+                }}
+              />
+            ))}
+          </div>
+        </section>
+      ))}
+      {activeVariantId && (
+        <button
+          type="button"
+          onClick={() => addScene.mutate({ storyVariantId: activeVariantId })}
+          disabled={addScene.isPending}
+          className="flex h-12 w-72 flex-shrink-0 items-center justify-center rounded-md border border-dashed border-[var(--border)] text-sm text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)] disabled:opacity-50"
+        >
+          + Page
+        </button>
+      )}
+    </div>
+  );
+}
 
 export default function ContentCanvas() {
   const [, params] = useRoute("/contents/:storyId");
@@ -124,43 +231,46 @@ export default function ContentCanvas() {
 
       <StyleAnchorPanel storyId={storyId} projectId={story.projectId} />
 
-      <ScriptPaste
-        storyId={storyId}
-        variantId={activeVariantId}
-        initialSourceText={story.sourceText}
-        hasScenes={scenes.length > 0}
-        onSplitDone={() => setActiveFrameId(null)}
-      />
+      {story.kind === "book" ? (
+        <ManuscriptUpload
+          storyId={storyId}
+          variantId={activeVariantId}
+          initialSourceText={story.sourceText}
+          hasScenes={scenes.length > 0}
+          onSplitDone={() => setActiveFrameId(null)}
+        />
+      ) : (
+        <ScriptPaste
+          storyId={storyId}
+          variantId={activeVariantId}
+          initialSourceText={story.sourceText}
+          hasScenes={scenes.length > 0}
+          onSplitDone={() => setActiveFrameId(null)}
+        />
+      )}
 
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         <div className="overflow-x-auto">
-          <div className="flex items-start gap-4 pb-2">
-            {scenes.map((scene) => (
-              <SceneColumn
-                key={scene.id}
-                scene={scene}
-                activeFrameId={activeFrameId}
-                onSelectFrame={setActiveFrameId}
-                onFrameDragStart={() => {}}
-                onDropFrame={(frameId, targetSceneId, targetIndex) => {
-                  moveFrame.mutate({ frameId, targetSceneId, targetIndex });
-                }}
-              />
-            ))}
-            {activeVariantId && (
-              <button
-                type="button"
-                onClick={() => addScene.mutate({ storyVariantId: activeVariantId })}
-                disabled={addScene.isPending}
-                className="flex h-12 w-72 flex-shrink-0 items-center justify-center rounded-md border border-dashed border-[var(--border)] text-sm text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)] disabled:opacity-50"
-              >
-                + Scene
-              </button>
-            )}
-          </div>
+          {story.kind === "book"
+            ? renderBookCanvas(
+                scenes,
+                activeFrameId,
+                setActiveFrameId,
+                moveFrame,
+                activeVariantId,
+                addScene,
+              )
+            : renderFlatCanvas(
+                scenes,
+                activeFrameId,
+                setActiveFrameId,
+                moveFrame,
+                activeVariantId,
+                addScene,
+              )}
           {scenes.length === 0 && (
             <div className="rounded-md border border-dashed border-[var(--border)] p-8 text-sm text-[var(--text-muted)]">
-              No scenes yet. Add one to start building the canvas.
+              No scenes yet. {story.kind === "book" ? "Upload a manuscript to populate the book." : "Add one to start building the canvas."}
             </div>
           )}
         </div>

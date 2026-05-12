@@ -9,6 +9,7 @@ import type {
   JobKind,
   JobStatus,
   PromptKey,
+  SectionKind,
   StoryKind,
   StoryStatus,
   TemplateKind,
@@ -105,6 +106,16 @@ export type AssetVariantMetadata = {
   dominantColors?: string[];
 };
 
+/** Book-page provenance preserved when a frame's imagePrompt came from a
+ * hand-tuned image_prompts.json companion. Currently advisory — generation
+ * still uses imagePrompt + template defaults. */
+export type FrameMetadata = {
+  negativePrompt?: string;
+  aspectRatio?: string;
+  styleRefs?: string[];
+  didacticRole?: string;
+};
+
 export type {
   AssetKind,
   AssetVariantKind,
@@ -116,6 +127,7 @@ export type {
   JobKind,
   JobStatus,
   PromptKey,
+  SectionKind,
   StoryKind,
   StoryStatus,
   TemplateKind,
