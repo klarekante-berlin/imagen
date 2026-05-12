@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { ASSET_VARIANT_KINDS } from "../../shared/types/enums";
 import { publicProcedure, router } from "../_core/trpc";
 import {
   applyVariantExtraction,
@@ -7,8 +8,10 @@ import {
 } from "../services/ai/apply-variants";
 import { getAsset } from "../services/db/assets";
 import {
+  countVariants,
   deleteVariant,
   getVariant,
+  listAllVariants,
   listVariantsForAsset,
 } from "../services/db/asset-variants";
 
@@ -16,6 +19,35 @@ export const assetVariantsRouter = router({
   listForAsset: publicProcedure
     .input(z.object({ assetId: z.string() }))
     .query(({ input }) => listVariantsForAsset(input.assetId)),
+
+  /** Global variant list for the Library variants tab. Strips the embedding
+   * blob from the response (use hasEmbedding instead) to keep payload small. */
+  listAll: publicProcedure
+    .input(
+      z
+        .object({
+          kinds: z.array(z.enum(ASSET_VARIANT_KINDS)).optional(),
+          parentAssetIds: z.array(z.string()).optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ input }) => {
+      const rows = await listAllVariants(input);
+      return rows.map((v) => ({
+        id: v.id,
+        parentAssetId: v.parentAssetId,
+        kind: v.kind,
+        name: v.name,
+        imageUrl: v.imageUrl,
+        bboxJson: v.bboxJson,
+        metadataJson: v.metadataJson,
+        createdAt: v.createdAt,
+        hasEmbedding: !!v.embedding,
+      }));
+    }),
+
+  /** Counts for the Library stats panel. */
+  stats: publicProcedure.query(() => countVariants()),
 
   /** Run Claude vision to detect sub-views, crop each, embed, persist. */
   extract: publicProcedure
