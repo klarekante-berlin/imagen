@@ -55,6 +55,53 @@ export async function detachAllForRef(
     .where(and(eq(attachments.ref, ref), eq(attachments.refId, refId)));
 }
 
+export async function detachAllForScope(
+  scope: AttachmentScope,
+  scopeId: string,
+): Promise<void> {
+  await db
+    .delete(attachments)
+    .where(and(eq(attachments.scope, scope), eq(attachments.scopeId, scopeId)));
+}
+
+/** Reassign every attachment with (ref, refId=fromId) to point at toId.
+ * Drops any row that would collide with an existing (scope, scopeId, ref, toId)
+ * attachment to keep the unique constraint clean. */
+export async function reassignRef(
+  ref: AttachmentRef,
+  fromId: string,
+  toId: string,
+): Promise<{ moved: number; dropped: number }> {
+  const rows = await listByRef(ref, fromId);
+  let moved = 0;
+  let dropped = 0;
+  for (const r of rows) {
+    const [collision] = await db
+      .select()
+      .from(attachments)
+      .where(
+        and(
+          eq(attachments.scope, r.scope),
+          eq(attachments.scopeId, r.scopeId),
+          eq(attachments.ref, ref),
+          eq(attachments.refId, toId),
+        ),
+      )
+      .limit(1);
+    if (collision) {
+      await db.delete(attachments).where(eq(attachments.id, r.id));
+      dropped++;
+      continue;
+    }
+    await db
+      .update(attachments)
+      .set({ refId: toId })
+      .where(eq(attachments.id, r.id));
+    moved++;
+  }
+  return { moved, dropped };
+}
+
 export async function listByScope(
   scope: AttachmentScope,
   scopeId: string,
