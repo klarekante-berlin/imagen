@@ -45,6 +45,21 @@ export async function listAssetsForCharacter(characterId: string): Promise<Asset
     .orderBy(desc(assets.createdAt));
 }
 
+export async function reassignCharacterAssets(
+  fromCharacterId: string,
+  toCharacterId: string,
+): Promise<number> {
+  const rows = await db
+    .update(assets)
+    .set({
+      characterId: toCharacterId,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(assets.characterId, fromCharacterId))
+    .returning({ id: assets.id });
+  return rows.length;
+}
+
 export async function getAsset(id: string): Promise<Asset | undefined> {
   const [row] = await db.select().from(assets).where(eq(assets.id, id)).limit(1);
   return row;

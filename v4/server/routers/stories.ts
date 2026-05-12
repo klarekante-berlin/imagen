@@ -6,7 +6,7 @@ import { publicProcedure, router } from "../_core/trpc";
 import { extractStyleFromReferences } from "../services/ai/extract-style";
 import { resolveStoryReferenceAssets } from "../services/ai/reference-resolver";
 import { splitContent } from "../services/ai/split-content";
-import { detachAllForRef } from "../services/db/attachments";
+import { cascadeDeleteStory } from "../services/cascade";
 import { resolveStoryAttachmentContext } from "../services/db/story-context";
 import {
   createFrame,
@@ -30,7 +30,6 @@ import {
 } from "../services/db/story-variants";
 import {
   createStory,
-  deleteStory,
   getStory,
   listStories,
   listStoriesForProject,
@@ -166,9 +165,10 @@ export const storiesRouter = router({
   delete: publicProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input }) => {
-      await deleteStory(input.id);
-      await detachAllForRef("asset", input.id); // any attachments by id (defensive)
-      return { ok: true };
+      const story = await getStory(input.id);
+      if (!story) throw new TRPCError({ code: "NOT_FOUND" });
+      const counts = await cascadeDeleteStory(input.id);
+      return { ok: true, ...counts };
     }),
 
   // ── Variants ────────────────────────────────────────────────────────────
