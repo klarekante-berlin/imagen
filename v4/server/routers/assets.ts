@@ -22,6 +22,10 @@ import {
   detachAllForRef,
   listScopeIdsForRef,
 } from "../services/db/attachments";
+import {
+  deleteVariantsForAsset,
+  listVariantsForAsset,
+} from "../services/db/asset-variants";
 import { createCharacter } from "../services/db/characters";
 import { storageDelete, storagePut } from "../services/storage";
 import { normalizeImageForRef } from "../services/storage/normalize-image";
