@@ -22,6 +22,7 @@ import {
   detachAllForRef,
   listScopeIdsForRef,
 } from "../services/db/attachments";
+import { createCharacter } from "../services/db/characters";
 import { storageDelete, storagePut } from "../services/storage";
 import { normalizeImageForRef } from "../services/storage/normalize-image";
 import { applyVisionCategorization } from "../services/ai/apply-categorization";
@@ -315,6 +316,110 @@ export const assetsRouter = router({
     }
     return { scanned: all.length, attempted: todo.length, ok, failed };
   }),
+
+  /**
+   * Accept the inferred-character suggestion on a sheet: create a new
+   * character with that name and bind this asset to it. Clears the suggestion.
+   */
+  acceptCharacterSuggestion: publicProcedure
+    .input(z.object({ assetId: z.string() }))
+    .mutation(async ({ input }) => {
+      const asset = await getAsset(input.assetId);
+      if (!asset) throw new TRPCError({ code: "NOT_FOUND" });
+      const suggested = asset.metadataJson?.inferredCharacterName?.trim();
+      if (!suggested) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "No character suggestion on this asset.",
+        });
+      }
+      if (asset.characterId) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Asset already bound to a character.",
+        });
+      }
+      const char = await createCharacter({
+        name: suggested,
+        origin: "anticipated",
+        worldId: asset.worldId ?? undefined,
+      });
+      const meta = { ...(asset.metadataJson ?? {}) };
+      delete meta.inferredCharacterName;
+      const updated = await updateAsset(input.assetId, {
+        characterId: char.id,
+        metadataJson: meta,
+      });
+      return {
+        asset: updated ? toPublicAsset(updated) : toPublicAsset(asset),
+        character: char,
+      };
+    }),
+
+  /** Dismiss the inferred-character suggestion on a sheet. Stays dismissed
+   * even if vision re-runs. */
+  dismissCharacterSuggestion: publicProcedure
+    .input(z.object({ assetId: z.string() }))
+    .mutation(async ({ input }) => {
+      const asset = await getAsset(input.assetId);
+      if (!asset) throw new TRPCError({ code: "NOT_FOUND" });
+      const meta = { ...(asset.metadataJson ?? {}) };
+      delete meta.inferredCharacterName;
+      meta.inferredCharacterDismissed = true;
+      const updated = await updateAsset(input.assetId, { metadataJson: meta });
+      return updated ? toPublicAsset(updated) : undefined;
+    }),
+
+  /** Bulk delete — used by library multi-select. Returns per-asset ok/failed. */
+  bulkDelete: publicProcedure
+    .input(z.object({ ids: z.array(z.string()).min(1).max(200) }))
+    .mutation(async ({ input }) => {
+      let ok = 0;
+      let failed = 0;
+      for (const id of input.ids) {
+        try {
+          const removed = await deleteAsset(id);
+          if (removed?.imageKey) await storageDelete(removed.imageKey);
+          if (removed) await detachAllForRef("asset", removed.id);
+          ok++;
+        } catch (err) {
+          failed++;
+          console.warn(`[v4 bulkDelete] ${id} failed: ${(err as Error).message}`);
+        }
+      }
+      return { ok, failed };
+    }),
+
+  /** Bulk re-categorize — runs vision over each asset. */
+  bulkCategorize: publicProcedure
+    .input(
+      z.object({
+        ids: z.array(z.string()).min(1).max(200),
+        applyKindIfHighConfidence: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      if (!process.env.ANTHROPIC_API_KEY) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "ANTHROPIC_API_KEY not set.",
+        });
+      }
+      let ok = 0;
+      let failed = 0;
+      for (const id of input.ids) {
+        try {
+          await applyVisionCategorization(id, {
+            applyKindIfHighConfidence: input.applyKindIfHighConfidence ?? false,
+          });
+          ok++;
+        } catch (err) {
+          failed++;
+          console.warn(`[v4 bulkCategorize] ${id} failed: ${(err as Error).message}`);
+        }
+      }
+      return { ok, failed };
+    }),
 
   /** Where is this asset used? Returns project ids it's attached to plus the
    * character it's bound to via FK. */
