@@ -356,6 +356,74 @@ export function AssetDrawer({ asset, onClose }: Props) {
             </div>
           </div>
 
+          {asset.kind === "character_sheet" && (
+            <div className="border-t border-[var(--border)] pt-3">
+              <div className="flex items-center justify-between">
+                <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                  Variants ({variantsQuery.data?.length ?? 0})
+                </div>
+                <button
+                  type="button"
+                  onClick={() => extractVariants.mutate({ assetId: asset.id })}
+                  disabled={extractVariants.isPending}
+                  className="rounded-md border border-[var(--border)] px-2 py-0.5 text-[10px] hover:bg-[var(--surface-muted)] disabled:opacity-50"
+                  title="Detect sub-views on this sheet (poses, outfits, expressions), crop them, and index each as its own reference."
+                >
+                  {extractVariants.isPending
+                    ? "✨ extracting…"
+                    : variantsQuery.data && variantsQuery.data.length > 0
+                      ? "✨ Re-extract"
+                      : "✨ Extract variants"}
+                </button>
+              </div>
+              {variantsQuery.data && variantsQuery.data.length > 0 && (
+                <ul className="mt-2 grid grid-cols-3 gap-2">
+                  {variantsQuery.data.map((v) => (
+                    <li
+                      key={v.id}
+                      className="group relative overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface)]"
+                      title={v.metadataJson?.visualDescription ?? v.name}
+                    >
+                      <div className="aspect-square overflow-hidden bg-[var(--surface-muted)]">
+                        {v.imageUrl ? (
+                          <img
+                            src={v.imageUrl}
+                            alt={v.name}
+                            className="h-full w-full object-cover"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center text-[10px] text-[var(--text-muted)]">
+                            no crop
+                          </div>
+                        )}
+                      </div>
+                      <div className="px-1.5 py-1 text-[10px]">
+                        <div className="truncate font-medium">{v.name}</div>
+                        <div className="text-[var(--text-muted)]">{v.kind}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => deleteVariant.mutate({ id: v.id })}
+                        className="absolute right-1 top-1 rounded bg-black/60 px-1 text-[9px] text-white opacity-0 group-hover:opacity-100"
+                        title="Delete variant"
+                      >
+                        ✕
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {variantsQuery.data &&
+                variantsQuery.data.length === 0 &&
+                !extractVariants.isPending && (
+                  <div className="mt-2 rounded-md border border-dashed border-[var(--border)] p-2 text-[11px] text-[var(--text-muted)]">
+                    No variants yet. Click Extract to detect sub-views (poses, outfits, expressions) and index each separately so RAG returns the precise pose, not the whole sheet.
+                  </div>
+                )}
+            </div>
+          )}
+
           <div className="border-t border-[var(--border)] pt-3">
             <button
               type="button"

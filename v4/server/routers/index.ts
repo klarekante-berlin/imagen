@@ -1,4 +1,5 @@
 import { router } from "../_core/trpc";
+import { assetVariantsRouter } from "./asset-variants";
 import { assetsRouter } from "./assets";
 import { attachmentsRouter } from "./attachments";
 import { charactersRouter } from "./characters";
@@ -17,6 +18,7 @@ export const appRouter = router({
   worlds: worldsRouter,
   characters: charactersRouter,
   assets: assetsRouter,
+  assetVariants: assetVariantsRouter,
   attachments: attachmentsRouter,
   stories: storiesRouter,
   scenes: scenesRouter,

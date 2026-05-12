@@ -241,6 +241,17 @@ export const assetsRouter = router({
   delete: publicProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input }) => {
+      const variants = await listVariantsForAsset(input.id);
+      for (const v of variants) {
+        if (v.imageKey) {
+          try {
+            await storageDelete(v.imageKey);
+          } catch (err) {
+            console.warn(`[v4 assets.delete] variant storage delete failed: ${(err as Error).message}`);
+          }
+        }
+      }
+      await deleteVariantsForAsset(input.id);
       const removed = await deleteAsset(input.id);
       if (removed?.imageKey) await storageDelete(removed.imageKey);
       if (removed) await detachAllForRef("asset", removed.id);
