@@ -58,6 +58,23 @@ export function AssetDrawer({ asset, onClose }: Props) {
       toast.note("Suggestion dismissed");
     },
   });
+  const variantsQuery = trpc.assetVariants.listForAsset.useQuery(
+    { assetId: asset.id },
+    { enabled: asset.kind === "character_sheet" },
+  );
+  const extractVariants = trpc.assetVariants.extract.useMutation({
+    onSuccess: (r) => {
+      utils.assetVariants.listForAsset.invalidate({ assetId: asset.id });
+      toast.success(
+        `Extracted ${r.created} variant${r.created === 1 ? "" : "s"}`,
+        r.skipped ? `${r.skipped} skipped (too small or out of bounds)` : undefined,
+      );
+    },
+    onError: (err) => toast.error("Variant extraction failed", err.message),
+  });
+  const deleteVariant = trpc.assetVariants.delete.useMutation({
+    onSuccess: () => utils.assetVariants.listForAsset.invalidate({ assetId: asset.id }),
+  });
 
   const [name, setName] = useState(asset.name);
   const [description, setDescription] = useState(asset.visualDescription ?? "");
