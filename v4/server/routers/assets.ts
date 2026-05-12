@@ -24,6 +24,7 @@ import {
 } from "../services/db/attachments";
 import { storageDelete, storagePut } from "../services/storage";
 import { normalizeImageForRef } from "../services/storage/normalize-image";
+import { applyVisionCategorization } from "../services/ai/apply-categorization";
 
 const base64Image = z
   .string()
@@ -192,6 +193,19 @@ export const assetsRouter = router({
           .join(". "),
       );
       let finalAsset = asset;
+
+      // Fire-and-forget Claude vision categorize so the asset row gets
+      // visualDescription / tags / pose / outfit / setting / mood / colors
+      // filled within a few seconds of upload. The mutation already returned
+      // by then; the client refetches assets.list and sees the enrichment.
+      if (process.env.ANTHROPIC_API_KEY) {
+        void applyVisionCategorization(asset.id).catch((err) => {
+          console.warn(
+            `[v4 upload] vision-categorize failed for ${asset.id}: ${(err as Error).message}`,
+          );
+        });
+      }
+
       if (embedding) {
         await setAssetEmbedding(asset.id, embedding);
         const refreshed = await getAsset(asset.id);
@@ -231,6 +245,76 @@ export const assetsRouter = router({
       if (removed) await detachAllForRef("asset", removed.id);
       return { ok: true };
     }),
+
+  /**
+   * Manually trigger Claude vision over this asset and persist the result.
+   * Used by the AssetDrawer's "Auto-fill from image" button and for the
+   * bulk re-categorize action.
+   */
+  categorize: publicProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        applyKindIfHighConfidence: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      if (!process.env.ANTHROPIC_API_KEY) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "ANTHROPIC_API_KEY not set.",
+        });
+      }
+      try {
+        const result = await applyVisionCategorization(input.id, {
+          applyKindIfHighConfidence: input.applyKindIfHighConfidence ?? false,
+        });
+        return { asset: toPublicAsset(result.asset), usage: result.usage };
+      } catch (err) {
+        const m = (err as Error).message ?? "Unknown error";
+        if (/401|authentication_error/i.test(m)) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Anthropic rejected the API key.",
+          });
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Categorize failed: ${m.slice(0, 240)}`,
+        });
+      }
+    }),
+
+  /**
+   * Categorize every asset that has no visualDescription yet. Returns
+   * counts. Errors per-asset are logged but don't abort the run.
+   */
+  categorizeMissing: publicProcedure.mutation(async () => {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "ANTHROPIC_API_KEY not set.",
+      });
+    }
+    const all = await listAllAssets();
+    const todo = all.filter(
+      (a) => !a.visualDescription || a.visualDescription.trim().length === 0,
+    );
+    let ok = 0;
+    let failed = 0;
+    for (const a of todo) {
+      try {
+        await applyVisionCategorization(a.id);
+        ok++;
+      } catch (err) {
+        failed++;
+        console.warn(
+          `[v4 categorizeMissing] ${a.id} (${a.name}) failed: ${(err as Error).message}`,
+        );
+      }
+    }
+    return { scanned: all.length, attempted: todo.length, ok, failed };
+  }),
 
   /** Where is this asset used? Returns project ids it's attached to plus the
    * character it's bound to via FK. */

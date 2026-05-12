@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { toast } from "../../lib/toast";
 import { trpc } from "../../lib/trpc";
 import type { PublicAsset } from "@v4shared/types/asset-view";
 
@@ -36,6 +37,13 @@ export function AssetDrawer({ asset, onClose }: Props) {
     },
   });
   const detach = trpc.attachments.detach.useMutation({ onSuccess: invalidate });
+  const categorize = trpc.assets.categorize.useMutation({
+    onSuccess: () => {
+      invalidate();
+      toast.success("Vision-categorized", "Description, tags, and metadata refreshed");
+    },
+    onError: (err) => toast.error("Categorize failed", err.message),
+  });
 
   const [name, setName] = useState(asset.name);
   const [description, setDescription] = useState(asset.visualDescription ?? "");
@@ -110,6 +118,46 @@ export function AssetDrawer({ asset, onClose }: Props) {
             </div>
           </div>
 
+          {(meta?.pose || meta?.outfit || meta?.setting || meta?.dominantColors?.length || meta?.tagAxes?.mood) && (
+            <div className="rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-2 text-[11px] text-[var(--text-muted)]">
+              <div className="mb-1 text-[9px] uppercase tracking-wide">Vision details</div>
+              <div className="space-y-0.5">
+                {meta?.pose && (
+                  <div>
+                    pose: <span className="text-[var(--text)]">{meta.pose}</span>
+                  </div>
+                )}
+                {meta?.outfit && (
+                  <div>
+                    outfit: <span className="text-[var(--text)]">{meta.outfit}</span>
+                  </div>
+                )}
+                {meta?.setting && (
+                  <div>
+                    setting: <span className="text-[var(--text)]">{meta.setting}</span>
+                  </div>
+                )}
+                {meta?.tagAxes?.mood && (
+                  <div>
+                    mood: <span className="text-[var(--text)]">{meta.tagAxes.mood}</span>
+                  </div>
+                )}
+                {meta?.dominantColors && meta.dominantColors.length > 0 && (
+                  <div>
+                    colors:{" "}
+                    <span className="text-[var(--text)]">{meta.dominantColors.join(" · ")}</span>
+                  </div>
+                )}
+                {meta?.visionConfidence !== undefined && (
+                  <div>
+                    confidence:{" "}
+                    <span className="text-[var(--text)]">{meta.visionConfidence}%</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           <label className="block text-xs">
             <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
               Name
@@ -123,8 +171,17 @@ export function AssetDrawer({ asset, onClose }: Props) {
           </label>
 
           <label className="block text-xs">
-            <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-              Visual description
+            <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+              <span>Visual description</span>
+              <button
+                type="button"
+                onClick={() => categorize.mutate({ id: asset.id })}
+                disabled={categorize.isPending}
+                className="rounded-md border border-[var(--border)] px-1.5 py-0.5 text-[10px] normal-case hover:bg-[var(--surface-muted)] disabled:opacity-50"
+                title="Run Claude vision over the image and fill description, tags, pose, outfit, setting, mood, colors."
+              >
+                {categorize.isPending ? "✨ filling…" : "✨ Auto-fill"}
+              </button>
             </span>
             <textarea
               value={description}
