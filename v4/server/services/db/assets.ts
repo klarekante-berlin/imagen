@@ -103,6 +103,37 @@ export async function deleteAsset(id: string): Promise<Asset | undefined> {
   return row;
 }
 
+export async function countAssets(): Promise<{
+  total: number;
+  embedded: number;
+  withVisualDescription: number;
+  withVisionConfidence: number;
+  byKind: Record<string, number>;
+  lastUpdated: string | null;
+}> {
+  const rows = await db.select().from(assets);
+  let embedded = 0;
+  let withVisualDescription = 0;
+  let withVisionConfidence = 0;
+  const byKind: Record<string, number> = {};
+  let lastUpdated: string | null = null;
+  for (const r of rows) {
+    if (r.embedding) embedded++;
+    if (r.visualDescription && r.visualDescription.trim().length > 0) withVisualDescription++;
+    if (typeof r.metadataJson?.visionConfidence === "number") withVisionConfidence++;
+    byKind[r.kind] = (byKind[r.kind] ?? 0) + 1;
+    if (!lastUpdated || r.updatedAt > lastUpdated) lastUpdated = r.updatedAt;
+  }
+  return {
+    total: rows.length,
+    embedded,
+    withVisualDescription,
+    withVisionConfidence,
+    byKind,
+    lastUpdated,
+  };
+}
+
 /**
  * In-memory cosine search. Optional projectId scopes via attachments,
  * worldId via FK, kinds via column. Fine for libraries up to a few thousand

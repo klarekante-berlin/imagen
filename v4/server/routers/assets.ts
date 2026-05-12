@@ -5,6 +5,7 @@ import { toPublicAsset } from "../../shared/types/asset-view";
 import { publicProcedure, router } from "../_core/trpc";
 import { embedImageWithText, embedText } from "../services/ai/voyage";
 import {
+  countAssets,
   createAsset,
   deleteAsset,
   getAsset,
@@ -25,6 +26,7 @@ import {
 import {
   deleteVariantsForAsset,
   listVariantsForAsset,
+  searchVariantsByEmbedding,
 } from "../services/db/asset-variants";
 import { createCharacter } from "../services/db/characters";
 import { storageDelete, storagePut } from "../services/storage";
@@ -486,4 +488,96 @@ export const assetsRouter = router({
       });
       return hits.map((h) => ({ ...toPublicAsset(h.asset), score: h.score }));
     }),
+
+  /**
+   * Library-wide unified semantic search across assets AND variants. Single
+   * combined ranking by cosine score. Used by the /library search box.
+   */
+  searchGlobal: publicProcedure
+    .input(
+      z.object({
+        query: z.string().min(1).max(500),
+        topK: z.number().int().min(1).max(50).default(12),
+        kinds: z.array(z.enum(ASSET_KINDS)).optional(),
+        includeVariants: z.boolean().default(true),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      if (!process.env.VOYAGE_API_KEY) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "VOYAGE_API_KEY not set — semantic search unavailable",
+        });
+      }
+      let queryEmbedding: Buffer;
+      try {
+        queryEmbedding = await embedText(input.query);
+      } catch (err) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Voyage embedding failed: ${(err as Error).message.slice(0, 200)}`,
+        });
+      }
+      const [assetHits, variantHits] = await Promise.all([
+        searchAssetsByEmbedding(queryEmbedding, input.topK, {
+          kinds: input.kinds as AssetKind[] | undefined,
+        }),
+        input.includeVariants
+          ? searchVariantsByEmbedding(queryEmbedding, input.topK)
+          : Promise.resolve([]),
+      ]);
+      const merged = [
+        ...assetHits.map((h) => ({
+          type: "asset" as const,
+          id: h.asset.id,
+          name: h.asset.name,
+          imageUrl: h.asset.imageUrl,
+          kind: h.asset.kind,
+          parentAssetId: null as string | null,
+          parentAssetName: null as string | null,
+          score: h.score,
+        })),
+        ...variantHits.map((h) => ({
+          type: "variant" as const,
+          id: h.variant.id,
+          name: h.variant.name,
+          imageUrl: h.variant.imageUrl ?? "",
+          kind: h.variant.kind,
+          parentAssetId: h.variant.parentAssetId as string | null,
+          parentAssetName: null as string | null,
+          score: h.score,
+        })),
+      ];
+      merged.sort((a, b) => b.score - a.score);
+      const top = merged.slice(0, input.topK);
+      // Backfill parent names for variant rows
+      const parentIds = Array.from(
+        new Set(
+          top
+            .filter((h) => h.type === "variant" && h.parentAssetId)
+            .map((h) => h.parentAssetId as string),
+        ),
+      );
+      if (parentIds.length > 0) {
+        const all = await listAllAssets();
+        const byId = new Map(all.map((a) => [a.id, a]));
+        for (const h of top) {
+          if (h.type === "variant" && h.parentAssetId) {
+            h.parentAssetName = byId.get(h.parentAssetId)?.name ?? null;
+          }
+        }
+      }
+      return top;
+    }),
+
+  /** Aggregate counts for the Library stats panel. */
+  libraryStats: publicProcedure.query(async () => {
+    const assetCounts = await countAssets();
+    return {
+      ...assetCounts,
+      voyageConfigured: !!process.env.VOYAGE_API_KEY,
+      anthropicConfigured: !!process.env.ANTHROPIC_API_KEY,
+      atlasConfigured: !!process.env.ATLASCLOUD_API_KEY,
+    };
+  }),
 });
