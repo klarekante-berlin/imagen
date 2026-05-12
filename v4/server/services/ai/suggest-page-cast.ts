@@ -5,6 +5,7 @@ import type {
 } from "@anthropic-ai/sdk/resources/messages";
 import type { SectionKind } from "../../../shared/types/enums";
 import { DEFAULT_MODEL, getClaude } from "./claude";
+import { withRetry } from "./with-retry";
 
 export type CastPoolEntry = {
   /** Library character id. */
@@ -130,14 +131,18 @@ export async function suggestPageCast(
       text: JSON.stringify(userPayload, null, 2),
     };
     const client = getClaude();
-    const response = await client.messages.create({
-      model: input.model ?? DEFAULT_MODEL,
-      max_tokens: 4000,
-      system,
-      tools: [SUGGEST_TOOL],
-      tool_choice: { type: "tool", name: "assign_page_casts" },
-      messages: [{ role: "user", content: [userBlock] }],
-    });
+    const response = await withRetry(
+      () =>
+        client.messages.create({
+          model: input.model ?? DEFAULT_MODEL,
+          max_tokens: 4000,
+          system,
+          tools: [SUGGEST_TOOL],
+          tool_choice: { type: "tool", name: "assign_page_casts" },
+          messages: [{ role: "user", content: [userBlock] }],
+        }),
+      { label: "suggestPageCast" },
+    );
     totalIn += response.usage.input_tokens;
     totalOut += response.usage.output_tokens;
     const toolUse = response.content.find((c) => c.type === "tool_use");
