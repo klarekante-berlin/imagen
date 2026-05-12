@@ -8,6 +8,7 @@ import { resolveStoryReferenceAssets } from "../services/ai/reference-resolver";
 import { splitContent } from "../services/ai/split-content";
 import { splitBook } from "../services/ai/split-book";
 import { parseBookManuscript } from "../services/ingest/book-manuscript";
+import { cascadeDeleteStory } from "../services/cascade";
 import { detachAllForRef } from "../services/db/attachments";
 import { resolveStoryAttachmentContext } from "../services/db/story-context";
 import {
