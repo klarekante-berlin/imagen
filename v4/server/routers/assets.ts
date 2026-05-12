@@ -26,6 +26,7 @@ import {
 import {
   deleteVariantsForAsset,
   listVariantsForAsset,
+  searchVariantsByEmbedding,
 } from "../services/db/asset-variants";
 import { createCharacter } from "../services/db/characters";
 import { storageDelete, storagePut } from "../services/storage";

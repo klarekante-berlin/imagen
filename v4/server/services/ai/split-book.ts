@@ -12,6 +12,7 @@ import type { SectionKind } from "../../../shared/types/enums";
 import { SECTION_KINDS } from "../../../shared/types/enums";
 import { DEFAULT_MODEL, getClaude } from "./claude";
 import { SECTION_VISUAL_GUIDE } from "./prompts/book-sections";
+import { withRetry } from "./with-retry";
 
 export type BookSplitOptions = {
   /** Prepend a chapter_opener frame for each ## H2. Default false. */
@@ -220,14 +221,18 @@ export async function splitBook(
           `Sections needing an imagePrompt:\n${JSON.stringify(payload, null, 2)}`,
       };
       const client = getClaude();
-      const response = await client.messages.create({
-        model: opts.model ?? DEFAULT_MODEL,
-        max_tokens: 16000,
-        system,
-        tools: [WRITE_TOOL],
-        tool_choice: { type: "tool", name: "write_section_prompts" },
-        messages: [{ role: "user", content: [userBlock] }],
-      });
+      const response = await withRetry(
+        () =>
+          client.messages.create({
+            model: opts.model ?? DEFAULT_MODEL,
+            max_tokens: 16000,
+            system,
+            tools: [WRITE_TOOL],
+            tool_choice: { type: "tool", name: "write_section_prompts" },
+            messages: [{ role: "user", content: [userBlock] }],
+          }),
+        { label: "splitBook" },
+      );
       const toolUse = response.content.find((c) => c.type === "tool_use");
       if (!toolUse || toolUse.type !== "tool_use") {
         console.warn(
