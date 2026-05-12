@@ -2,6 +2,12 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { publicProcedure, router } from "../_core/trpc";
 import {
+  listAssetsForWorld,
+} from "../services/db/assets";
+import {
+  listCharactersForWorld,
+} from "../services/db/characters";
+import {
   createWorld,
   deleteWorld,
   getWorld,
@@ -21,6 +27,29 @@ const styleTokens = z
 
 export const worldsRouter = router({
   list: publicProcedure.query(() => listWorlds()),
+
+  /** Per-world counts: characters, plus assets broken out by kind. Drives
+   * the Worlds list page table. */
+  listWithCounts: publicProcedure.query(async () => {
+    const all = await listWorlds();
+    const out = await Promise.all(
+      all.map(async (w) => {
+        const characters = await listCharactersForWorld(w.id);
+        const assets = await listAssetsForWorld(w.id);
+        const byKind: Record<string, number> = {};
+        for (const a of assets) byKind[a.kind] = (byKind[a.kind] ?? 0) + 1;
+        return {
+          ...w,
+          characterCount: characters.length,
+          environmentCount: byKind["environment"] ?? 0,
+          propCount: byKind["prop"] ?? 0,
+          styleRefCount: byKind["style_ref"] ?? 0,
+          totalAssetCount: assets.length,
+        };
+      }),
+    );
+    return out;
+  }),
 
   get: publicProcedure
     .input(z.object({ id: z.string() }))
