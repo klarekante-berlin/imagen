@@ -78,6 +78,48 @@ export const storiesRouter = router({
     .input(z.object({ projectId: z.string() }))
     .query(({ input }) => listStoriesForProject(input.projectId)),
 
+  /** Per-story counts for the table view. Returns scenes + frame breakdown
+   * (ready / generating / draft / error). */
+  listByProjectWithCounts: publicProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(async ({ input }) => {
+      const all = await listStoriesForProject(input.projectId);
+      const framesModule = await import("../services/db/frames");
+      const scenesModule = await import("../services/db/scenes");
+      const variantsModule = await import("../services/db/story-variants");
+      const out = await Promise.all(
+        all.map(async (s) => {
+          const variant = await variantsModule.getPrimaryVariant(s.id);
+          const scenes = variant
+            ? await scenesModule.listScenesForVariant(variant.id)
+            : [];
+          let total = 0;
+          let ready = 0;
+          let generating = 0;
+          let error = 0;
+          for (const sc of scenes) {
+            const frames = await framesModule.listFramesForScene(sc.id);
+            total += frames.length;
+            for (const f of frames) {
+              if (f.status === "ready") ready++;
+              else if (f.status === "generating" || f.status === "queued") generating++;
+              else if (f.status === "error") error++;
+            }
+          }
+          return {
+            ...s,
+            primaryVariantId: variant?.id ?? null,
+            sceneCount: scenes.length,
+            frameCount: total,
+            framesReady: ready,
+            framesGenerating: generating,
+            framesError: error,
+          };
+        }),
+      );
+      return out;
+    }),
+
   get: publicProcedure
     .input(z.object({ id: z.string() }))
     .query(({ input }) => getStory(input.id)),

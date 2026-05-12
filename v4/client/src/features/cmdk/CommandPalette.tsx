@@ -82,6 +82,7 @@ export function CommandPalette() {
                   : undefined
               }
             />
+            <Item label="Templates" onSelect={() => go("/templates")} hint="settings" />
           </Command.Group>
 
           <Command.Group heading="Actions">

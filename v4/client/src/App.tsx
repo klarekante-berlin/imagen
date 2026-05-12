@@ -7,6 +7,7 @@ import Home from "./pages/Home";
 import Jobs from "./pages/Jobs";
 import Library from "./pages/Library";
 import ProjectDetail from "./pages/ProjectDetail";
+import Templates from "./pages/Templates";
 import Worlds from "./pages/Worlds";
 import WorldDetail from "./pages/WorldDetail";
 
@@ -64,6 +65,7 @@ export default function App() {
           <Route path="/worlds/:id" component={WorldDetail} />
           <Route path="/contents/:storyId" component={ContentCanvas} />
           <Route path="/jobs" component={Jobs} />
+          <Route path="/templates" component={Templates} />
           <Route>
             <div className="text-[var(--text-muted)]">Not found.</div>
           </Route>
