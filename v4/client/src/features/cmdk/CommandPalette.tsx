@@ -1,6 +1,7 @@
 import { Command } from "cmdk";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
+import { toast } from "../../lib/toast";
 import { trpc } from "../../lib/trpc";
 
 export function CommandPalette() {
@@ -28,6 +29,16 @@ export function CommandPalette() {
   const utils = trpc.useUtils();
   const sync = trpc.frames.syncPending.useMutation({
     onSuccess: () => utils.frames.listPending.invalidate(),
+  });
+  const categorizeMissing = trpc.assets.categorizeMissing.useMutation({
+    onSuccess: (result) => {
+      utils.assets.list.invalidate();
+      toast.success(
+        "Vision categorize done",
+        `${result.ok}/${result.attempted} succeeded${result.failed > 0 ? ` · ${result.failed} failed` : ""}`,
+      );
+    },
+    onError: (err) => toast.error("Categorize-all failed", err.message),
   });
 
   function go(href: string) {
@@ -78,6 +89,14 @@ export function CommandPalette() {
               label="Sync Atlas predictions"
               onSelect={() => {
                 sync.mutate();
+                setOpen(false);
+              }}
+            />
+            <Item
+              label="Categorize all uncategorized assets (Claude vision)"
+              hint="bulk auto-fill"
+              onSelect={() => {
+                categorizeMissing.mutate();
                 setOpen(false);
               }}
             />
