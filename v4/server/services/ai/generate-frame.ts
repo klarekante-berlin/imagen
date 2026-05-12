@@ -79,10 +79,53 @@ export async function submitFrameForGeneration(input: SubmitInput): Promise<void
   const story = await getStory(scene.storyId);
   if (!story) throw new Error(`Story ${scene.storyId} not found`);
 
-  const { refs, attachedCharNames } = await resolveStoryReferenceAssets(
-    story.id,
-    story.projectId,
-  );
+  const resolved = await resolveStoryReferenceAssets(story.id, story.projectId);
+  let refs = resolved.refs;
+  let attachedCharNames = resolved.attachedCharNames;
+
+  // Book-specific path: sanitize the prompt with the per-page cast, and
+  // narrow the reference list to only the characters that appear on this page.
+  let effectiveImagePrompt = frame.imagePrompt ?? "";
+  if (story.kind === "book") {
+    const { sanitizeBookPrompt, resolveCastNameMapping } = await import(
+      "./sanitize-book-prompt"
+    );
+    const { listAllCharacters } = await import("../db/characters");
+    const allChars = await listAllCharacters();
+    const idToName = new Map(allChars.map((c) => [c.id, c.name]));
+    const castNameMapping = resolveCastNameMapping(
+      story.castMappingJson,
+      idToName,
+    );
+
+    const pageCastIds = frame.castJson ?? [];
+    const pageCastIdSet = new Set(pageCastIds);
+    const pageCastNames = pageCastIds
+      .map((id) => idToName.get(id))
+      .filter((n): n is string => !!n);
+
+    effectiveImagePrompt = sanitizeBookPrompt({
+      originalPrompt: effectiveImagePrompt,
+      castNameMapping,
+      pageCastNames,
+    });
+
+    // Narrow refs: keep style_refs and any environment/prop, but for
+    // character_primary refs only keep those whose character is in the
+    // page cast. Empty page cast → keep all (fallback to story default).
+    if (pageCastIds.length > 0) {
+      refs = refs.filter((r) => {
+        if (r.source === "character_primary") {
+          return r.asset.characterId
+            ? pageCastIdSet.has(r.asset.characterId)
+            : false;
+        }
+        return true;
+      });
+      attachedCharNames = pageCastNames;
+    }
+  }
+
   const hasStyleRefs = refs.some((r) => r.asset.kind === "style_ref");
 
   // Effective style anchor: story override beats project default.
@@ -92,12 +135,19 @@ export async function submitFrameForGeneration(input: SubmitInput): Promise<void
     styleAnchorText = project?.styleAnchorText ?? null;
   }
 
+  // For book pages the sanitizer already injected the cast line — skip the
+  // generic one in buildPrompt to avoid duplication.
+  const skipCastLine = story.kind === "book";
+  const promptFrame =
+    story.kind === "book"
+      ? { ...frame, imagePrompt: effectiveImagePrompt }
+      : frame;
   const prompt = buildPrompt(
-    frame,
+    promptFrame,
     scene,
     story.title,
     hasStyleRefs,
-    attachedCharNames,
+    skipCastLine ? [] : attachedCharNames,
     styleAnchorText,
   );
 

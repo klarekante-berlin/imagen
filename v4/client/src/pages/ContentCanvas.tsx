@@ -231,6 +231,10 @@ export default function ContentCanvas() {
 
       <StyleAnchorPanel storyId={storyId} projectId={story.projectId} />
 
+      {story.kind === "book" && story.castMappingJson && (
+        <ResanitizeButton storyId={storyId} />
+      )}
+
       {story.kind === "book" ? (
         <ManuscriptUpload
           storyId={storyId}
@@ -288,6 +292,40 @@ export default function ContentCanvas() {
           )}
         </aside>
       </div>
+    </div>
+  );
+}
+
+function ResanitizeButton({ storyId }: { storyId: string }) {
+  const utils = trpc.useUtils();
+  const sanitize = trpc.stories.resanitizeBookPrompts.useMutation({
+    onSuccess: (r) => {
+      utils.frames.get.invalidate();
+      utils.frames.listByScene.invalidate();
+      // eslint-disable-next-line no-console
+      console.log(
+        `[v4 resanitize] touched=${r.touched} unchanged=${r.unchanged}`,
+      );
+    },
+  });
+  return (
+    <div className="flex items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs">
+      <span className="text-[var(--text-muted)]">
+        Cast mapping is set. Re-sanitize rewrites every page's <code>imagePrompt</code>{" "}
+        with the current cast — no Atlas calls.
+      </span>
+      <button
+        type="button"
+        disabled={sanitize.isPending}
+        onClick={() => sanitize.mutate({ storyId })}
+        className="ml-auto rounded-md border border-[var(--border)] px-2.5 py-1 hover:bg-[var(--surface-muted)] disabled:opacity-50"
+      >
+        {sanitize.isPending
+          ? "Sanitizing…"
+          : sanitize.data
+            ? `Done · ${sanitize.data.touched} updated`
+            : "Re-sanitize prompts"}
+      </button>
     </div>
   );
 }

@@ -60,6 +60,18 @@ export function FrameInspector({ frameId, onDeleted }: Props) {
     { id: frameQuery.data?.previousRenditionId ?? "" },
     { enabled: !!frameQuery.data?.previousRenditionId },
   );
+  const sceneQuery = trpc.scenes.get.useQuery(
+    { id: frameQuery.data?.sceneId ?? "" },
+    { enabled: !!frameQuery.data?.sceneId },
+  );
+  const storyQuery = trpc.stories.get.useQuery(
+    { id: sceneQuery.data?.storyId ?? "" },
+    { enabled: !!sceneQuery.data?.storyId },
+  );
+  const charactersQuery = trpc.characters.list.useQuery();
+  const updateCast = trpc.frames.updateCast.useMutation({
+    onSuccess: () => utils.frames.get.invalidate({ id: frameId }),
+  });
 
   const [prompt, setPrompt] = useState("");
   const [overlay, setOverlay] = useState("");
@@ -213,6 +225,17 @@ export function FrameInspector({ frameId, onDeleted }: Props) {
         />
       </label>
 
+      {storyQuery.data?.kind === "book" && (
+        <CastPicker
+          allCharacterIds={Object.values(storyQuery.data.castMappingJson ?? {})
+            .filter((v): v is string => !!v)
+            .concat(frame.castJson ?? [])}
+          selectedIds={frame.castJson ?? []}
+          characters={charactersQuery.data ?? []}
+          onChange={(ids) => updateCast.mutate({ id: frameId, characterIds: ids })}
+        />
+      )}
+
       <label className="flex flex-col gap-1">
         <span className="text-xs text-[var(--text-muted)]">Image prompt</span>
         <textarea
@@ -256,5 +279,59 @@ export function FrameInspector({ frameId, onDeleted }: Props) {
         </button>
       </div>
     </div>
+  );
+}
+
+function CastPicker({
+  allCharacterIds,
+  selectedIds,
+  characters,
+  onChange,
+}: {
+  allCharacterIds: string[];
+  selectedIds: string[];
+  characters: Array<{ id: string; name: string }>;
+  onChange: (ids: string[]) => void;
+}) {
+  const pool = Array.from(new Set(allCharacterIds));
+  const byId = new Map(characters.map((c) => [c.id, c.name]));
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-xs text-[var(--text-muted)]">
+        Cast on this page{" "}
+        <span className="text-[10px]">({selectedIds.length} selected)</span>
+      </span>
+      <div className="flex flex-wrap gap-1 rounded-md border border-[var(--border)] bg-[var(--bg)] p-1.5">
+        {pool.length === 0 && (
+          <span className="text-[10px] text-[var(--text-muted)]">
+            No cast pool — set the story's cast mapping first.
+          </span>
+        )}
+        {pool.map((id) => {
+          const active = selectedIds.includes(id);
+          const name = byId.get(id) ?? id.slice(0, 6);
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() =>
+                onChange(
+                  active
+                    ? selectedIds.filter((x) => x !== id)
+                    : [...selectedIds, id],
+                )
+              }
+              className={`rounded-full border px-2 py-0.5 text-[11px] ${
+                active
+                  ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--accent-fg)]"
+                  : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)]"
+              }`}
+            >
+              {name}
+            </button>
+          );
+        })}
+      </div>
+    </label>
   );
 }

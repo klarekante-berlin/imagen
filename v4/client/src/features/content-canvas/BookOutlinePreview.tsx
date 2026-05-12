@@ -11,6 +11,7 @@ type Frame = {
   imagePrompt: string;
   caption?: string;
   origin: "json" | "claude" | "auto";
+  cast?: string[];
   jsonMetadata?: {
     negativePrompt?: string;
     aspectRatio?: string;
@@ -34,6 +35,9 @@ type Props = {
     extraCharacters: Array<{ name: string; description: string }>;
   };
   initialFrames: Frame[];
+  /** Manuscript name → library character id. Forwarded to applyBookSplit so
+   * it gets persisted on the story. */
+  castMapping: Record<string, string | null>;
   stats: {
     jsonMatches: number;
     claudeWrites: number;
@@ -62,6 +66,7 @@ export function BookOutlinePreview({
   variantId,
   parsed,
   initialFrames,
+  castMapping,
   stats,
   hasExistingScenes,
   onClose,
@@ -69,6 +74,18 @@ export function BookOutlinePreview({
 }: Props) {
   const [frames, setFrames] = useState<Frame[]>(initialFrames);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const charactersQuery = trpc.characters.list.useQuery();
+  const charactersById = new Map(
+    (charactersQuery.data ?? []).map((c) => [c.id, c]),
+  );
+  // Character ids that are in the story's cast pool (mapped JSON chars + per-frame cast appearances)
+  const poolCharacterIds = new Set<string>();
+  for (const id of Object.values(castMapping)) {
+    if (id) poolCharacterIds.add(id);
+  }
+  for (const f of frames) {
+    for (const id of f.cast ?? []) poolCharacterIds.add(id);
+  }
   const apply = trpc.stories.applyBookSplit.useMutation({
     onSuccess: (r) => {
       toast.success(
@@ -182,6 +199,16 @@ export function BookOutlinePreview({
                       <span className="flex-1 truncate text-[var(--text-muted)]">
                         {(f.imagePrompt || f.caption || "").slice(0, 120)}
                       </span>
+                      <span
+                        className="text-[10px] text-[var(--text-muted)]"
+                        title={
+                          (f.cast ?? [])
+                            .map((id) => charactersById.get(id)?.name ?? id.slice(0, 6))
+                            .join(", ") || "no cast"
+                        }
+                      >
+                        cast: {(f.cast ?? []).length}
+                      </span>
                       <button
                         type="button"
                         onClick={() => setExpandedIdx(expandedIdx === idx ? null : idx)}
@@ -199,6 +226,42 @@ export function BookOutlinePreview({
                     </div>
                     {expandedIdx === idx && (
                       <div className="mt-2 space-y-1.5">
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                            Cast on this page
+                          </div>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {Array.from(poolCharacterIds).map((id) => {
+                              const ch = charactersById.get(id);
+                              if (!ch) return null;
+                              const active = (f.cast ?? []).includes(id);
+                              return (
+                                <button
+                                  key={id}
+                                  type="button"
+                                  onClick={() => {
+                                    const next = active
+                                      ? (f.cast ?? []).filter((x) => x !== id)
+                                      : [...(f.cast ?? []), id];
+                                    updateFrame(idx, { cast: next });
+                                  }}
+                                  className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                                    active
+                                      ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--accent-fg)]"
+                                      : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)]"
+                                  }`}
+                                >
+                                  {ch.name}
+                                </button>
+                              );
+                            })}
+                            {poolCharacterIds.size === 0 && (
+                              <span className="text-[10px] text-[var(--text-muted)]">
+                                No cast pool set — map characters in the upload step or leave empty for default.
+                              </span>
+                            )}
+                          </div>
+                        </div>
                         <label className="block">
                           <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
                             Image prompt
@@ -254,12 +317,14 @@ export function BookOutlinePreview({
                 apply.mutate({
                   storyId,
                   variantId,
+                  castMapping,
                   frames: frames.map((f) => ({
                     sectionKind: f.sectionKind as SectionKind,
                     pageNumber: f.pageNumber,
                     chapterTitle: f.chapterTitle,
                     imagePrompt: f.imagePrompt,
                     caption: f.caption,
+                    cast: f.cast ?? [],
                     jsonMetadata: f.jsonMetadata ?? null,
                   })),
                 });
