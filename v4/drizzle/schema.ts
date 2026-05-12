@@ -338,6 +338,11 @@ export const renditions = sqliteTable(
     frameId: text("frame_id").notNull(),
     imageKey: text("image_key").notNull(),
     imageUrl: text("image_url").notNull(),
+    /** Book-only: the raw Atlas illustration before sharp/SVG composition.
+     * Allows re-running composeBookPage with updated cast/text without a
+     * fresh Atlas call. Null for non-book renditions and pre-Phase-B rows. */
+    rawIllustrationKey: text("raw_illustration_key"),
+    rawIllustrationUrl: text("raw_illustration_url"),
     model: text("model").notNull(),
     paramsJson: text("params_json", { mode: "json" }).$type<RenditionParams>().notNull(),
     qcReportJson: text("qc_report_json", { mode: "json" }).$type<QcReport>(),

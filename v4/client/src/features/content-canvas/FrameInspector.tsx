@@ -51,6 +51,14 @@ export function FrameInspector({ frameId, onDeleted }: Props) {
       utils.frames.listByScene.invalidate();
     },
   });
+  const recomposeBook = trpc.frames.recomposeBookPage.useMutation({
+    onSuccess: () => {
+      utils.frames.get.invalidate({ id: frameId });
+      utils.renditions.get.invalidate();
+      toast.success("Page re-composed");
+    },
+    onError: (err) => toast.error("Re-compose failed", err.message),
+  });
 
   const currentQuery = trpc.renditions.get.useQuery(
     { id: frameQuery.data?.currentRenditionId ?? "" },
@@ -199,6 +207,18 @@ export function FrameInspector({ frameId, onDeleted }: Props) {
               ? "Regenerate"
               : "Generate"}
       </button>
+      {storyQuery.data?.kind === "book" &&
+        currentQuery.data?.rawIllustrationKey && (
+          <button
+            type="button"
+            onClick={() => recomposeBook.mutate({ frameId })}
+            disabled={recomposeBook.isPending}
+            className="w-full rounded-md border border-[var(--border)] px-3 py-1.5 text-xs hover:bg-[var(--surface-muted)] disabled:opacity-50"
+            title="Re-run the sharp/SVG page composition with the latest caption + cast — no Atlas call."
+          >
+            {recomposeBook.isPending ? "Re-composing…" : "Re-compose page (no Atlas)"}
+          </button>
+        )}
       {generate.error && (
         <div className="text-xs text-[var(--danger)]">{generate.error.message}</div>
       )}
