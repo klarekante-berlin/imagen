@@ -1,0 +1,1 @@
+ALTER TABLE `frames` ADD `metadata_json` text;

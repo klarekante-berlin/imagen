@@ -29,6 +29,20 @@
       "when": 1778506350177,
       "tag": "0003_confused_night_thrasher",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1778584721253,
+      "tag": "0004_naive_phantom_reporter",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1778584984294,
+      "tag": "0005_perpetual_bucky",
+      "breakpoints": true
     }
   ]
 }

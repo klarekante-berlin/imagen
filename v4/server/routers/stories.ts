@@ -1,11 +1,13 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { STORY_KINDS } from "../../shared/types/enums";
+import { SECTION_KINDS, STORY_KINDS } from "../../shared/types/enums";
 import type { PromptKey } from "../../shared/types/enums";
 import { publicProcedure, router } from "../_core/trpc";
 import { extractStyleFromReferences } from "../services/ai/extract-style";
 import { resolveStoryReferenceAssets } from "../services/ai/reference-resolver";
 import { splitContent } from "../services/ai/split-content";
+import { splitBook } from "../services/ai/split-book";
+import { parseBookManuscript } from "../services/ingest/book-manuscript";
 import { detachAllForRef } from "../services/db/attachments";
 import { resolveStoryAttachmentContext } from "../services/db/story-context";
 import {
@@ -500,6 +502,187 @@ export const storiesRouter = router({
           });
           frameCount++;
         }
+      }
+
+      return { sceneCount, frameCount };
+    }),
+
+  /**
+   * Book-only: parse a markdown manuscript (+ optional image_prompts.json),
+   * classify sections, match JSON prompts, batch-write the unmatched, and
+   * auto-augment with Cover/ToC/Endpage. Does NOT persist; returns the
+   * preview shape for the client to edit and then apply.
+   */
+  previewBookSplit: publicProcedure
+    .input(
+      z.object({
+        storyId: z.string(),
+        markdown: z.string().min(20),
+        imagePromptsJson: z.any().optional(),
+        includeChapterOpeners: z.boolean().optional(),
+        autoFrontBackMatter: z.boolean().optional(),
+        model: z.string().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const story = await getStory(input.storyId);
+      if (!story) throw new TRPCError({ code: "NOT_FOUND", message: "Story not found" });
+      if (story.kind !== "book") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "previewBookSplit only works for kind='book' stories.",
+        });
+      }
+      const parsed = parseBookManuscript(input.markdown, input.imagePromptsJson);
+      if (parsed.stats.sections === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "No sections detected — the markdown has no ## or ### headings.",
+        });
+      }
+
+      // Persist the source markdown on the story so re-runs don't need re-upload.
+      if (input.markdown !== story.sourceText) {
+        await updateStory(story.id, { sourceText: input.markdown });
+      }
+
+      // The Claude call inside splitBook needs the API key; the pure-text
+      // path doesn't. Only block when there's actually pending Claude work.
+      const needsClaude = parsed.chapters
+        .flatMap((c) => c.sections)
+        .some((s) => s.matchedPrompts.length === 0);
+      if (needsClaude && !process.env.ANTHROPIC_API_KEY) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "ANTHROPIC_API_KEY not set — needed to generate prompts for sections without an image_prompts.json match.",
+        });
+      }
+
+      try {
+        const result = await splitBook(parsed, {
+          includeChapterOpeners: input.includeChapterOpeners,
+          autoFrontBackMatter: input.autoFrontBackMatter,
+          model: input.model,
+        });
+        return {
+          parsed: {
+            title: parsed.title,
+            stats: parsed.stats,
+            extraCharacters: parsed.extraCharacters,
+          },
+          frames: result.frames.map((f) => ({
+            sectionKind: f.sectionKind,
+            pageNumber: f.pageNumber,
+            chapterTitle: f.chapterTitle,
+            imagePrompt: f.imagePrompt,
+            caption: f.caption,
+            origin: f.origin,
+            jsonMetadata: f.jsonEntry
+              ? {
+                  negativePrompt: f.jsonEntry.negative_prompt,
+                  aspectRatio: f.jsonEntry.aspect_ratio,
+                  styleRefs: f.jsonEntry.style_refs,
+                  didacticRole: f.jsonEntry.didactic_role,
+                }
+              : null,
+          })),
+          stats: result.stats,
+          usage: result.usage,
+        };
+      } catch (err) {
+        const message = (err as Error).message ?? "Unknown error";
+        if (/401|authentication_error|invalid x-api-key/i.test(message)) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Anthropic rejected the API key.",
+          });
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Book split failed: ${message.slice(0, 240)}`,
+        });
+      }
+    }),
+
+  /**
+   * Book-only: persist a (potentially user-edited) list of book frames to
+   * the active variant. Each frame becomes a scene-with-one-frame so the
+   * existing canvas + generation pipeline can render it as-is.
+   */
+  applyBookSplit: publicProcedure
+    .input(
+      z.object({
+        storyId: z.string(),
+        variantId: z.string().optional(),
+        frames: z.array(
+          z.object({
+            sectionKind: z.enum(SECTION_KINDS),
+            pageNumber: z.number().int().nullable(),
+            chapterTitle: z.string().nullable(),
+            imagePrompt: z.string().min(1),
+            caption: z.string().optional(),
+            jsonMetadata: z
+              .object({
+                negativePrompt: z.string().optional(),
+                aspectRatio: z.string().optional(),
+                styleRefs: z.array(z.string()).optional(),
+                didacticRole: z.string().optional(),
+              })
+              .nullable()
+              .optional(),
+          }),
+        ),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const story = await getStory(input.storyId);
+      if (!story) throw new TRPCError({ code: "NOT_FOUND", message: "Story not found" });
+      if (story.kind !== "book") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "applyBookSplit only works for kind='book' stories.",
+        });
+      }
+      const variant =
+        (input.variantId && (await getStoryVariant(input.variantId))) ||
+        (await getPrimaryVariant(story.id));
+      if (!variant || variant.storyId !== story.id) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Variant not found" });
+      }
+
+      // Wipe existing scenes + frames for this variant.
+      const oldScenes = await listScenesForVariant(variant.id);
+      const framesModule = await import("../services/db/frames");
+      for (const s of oldScenes) {
+        const oldFrames = await listFramesForScene(s.id);
+        for (const f of oldFrames) await framesModule.deleteFrame(f.id);
+        await deleteScene(s.id);
+      }
+
+      let sceneCount = 0;
+      let frameCount = 0;
+      for (let si = 0; si < input.frames.length; si++) {
+        const f = input.frames[si]!;
+        const scene = await createScene({
+          storyId: story.id,
+          storyVariantId: variant.id,
+          orderIndex: si,
+          title: f.chapterTitle ?? f.sectionKind,
+          sectionKind: f.sectionKind,
+          pageNumber: f.pageNumber,
+          chapterTitle: f.chapterTitle,
+        });
+        sceneCount++;
+        await createFrame({
+          sceneId: scene.id,
+          orderIndex: 0,
+          frameType: "page",
+          caption: f.caption,
+          imagePrompt: f.imagePrompt,
+          metadataJson: f.jsonMetadata ?? undefined,
+        });
+        frameCount++;
       }
 
       return { sceneCount, frameCount };

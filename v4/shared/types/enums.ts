@@ -50,6 +50,22 @@ export type PromptKey = (typeof PROMPT_KEYS)[number];
 export const STORY_KINDS = ["story", "reel", "book", "single"] as const;
 export type StoryKind = (typeof STORY_KINDS)[number];
 
+export const SECTION_KINDS = [
+  "cover",
+  "toc",
+  "chapter_opener",
+  "recap",
+  "image_anchor",
+  "body",
+  "denkfalle",
+  "quiz",
+  "experiment",
+  "glossary",
+  "endpage",
+  "custom",
+] as const;
+export type SectionKind = (typeof SECTION_KINDS)[number];
+
 export const ASSET_VARIANT_KINDS = [
   "pose",
   "outfit",

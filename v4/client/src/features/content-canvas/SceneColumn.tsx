@@ -124,8 +124,20 @@ export function SceneColumn({
             className="flex-1 text-left"
             title="Click to edit"
           >
-            <div className="text-sm font-medium">
-              {scene.title || `Scene ${scene.orderIndex + 1}`}
+            <div className="flex flex-wrap items-baseline gap-1.5">
+              {scene.pageNumber !== null && scene.pageNumber !== undefined && (
+                <span className="font-mono text-[11px] text-[var(--text-muted)]">
+                  p{scene.pageNumber}
+                </span>
+              )}
+              <div className="text-sm font-medium">
+                {scene.title || `Scene ${scene.orderIndex + 1}`}
+              </div>
+              {scene.sectionKind && (
+                <span className="rounded-full bg-[var(--surface)] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-[var(--text-muted)]">
+                  {scene.sectionKind.replace("_", " ")}
+                </span>
+              )}
             </div>
             {scene.environment && (
               <div className="mt-0.5 text-xs text-[var(--text-muted)]">

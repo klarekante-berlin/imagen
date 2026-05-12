@@ -18,6 +18,7 @@ import type {
   AttachmentRef,
   AttachmentScope,
   CharacterOrigin,
+  FrameMetadata,
   FrameStatus,
   FrameType,
   JobKind,
@@ -28,6 +29,7 @@ import type {
   QcReport,
   RenditionParams,
   SceneCharacterRef,
+  SectionKind,
   StoryKind,
   StoryStatus,
   TagAxes,
@@ -269,6 +271,9 @@ export const scenes = sqliteTable(
       .$type<SceneCharacterRef[]>(),
     missingEntitiesJson: text("missing_entities_json", { mode: "json" })
       .$type<string[]>(),
+    sectionKind: text("section_kind").$type<SectionKind>(),
+    pageNumber: integer("page_number"),
+    chapterTitle: text("chapter_title"),
     createdAt: text("created_at").notNull().default(now),
     updatedAt: text("updated_at").notNull().default(now),
   },
@@ -304,6 +309,9 @@ export const frames = sqliteTable(
     pendingParamsJson: text("pending_params_json", { mode: "json" }).$type<RenditionParams>(),
     /** ISO timestamp when generate was submitted — for UI elapsed display. */
     pendingStartedAt: text("pending_started_at"),
+    /** Bag for hand-tuned book-page provenance (negative_prompt, aspect_ratio,
+     * style_refs, didactic_role) plus any future per-frame metadata. */
+    metadataJson: text("metadata_json", { mode: "json" }).$type<FrameMetadata>(),
     createdAt: text("created_at").notNull().default(now),
     updatedAt: text("updated_at").notNull().default(now),
   },
