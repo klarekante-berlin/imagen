@@ -181,3 +181,35 @@ Gemeinsame Technik der Magazin-Runde:
 | roadtrip-kueste.webp | umgebungen/enivornment-sheet (Küstenpanel) | Held F |
 | berlin-panorama.webp, -alexanderplatz, -eastside, -reichstag, -ubahn, -currywurst | umgebungen/environment-sheet Berlin (Einzelpanels) | Cover D, Rubriken, 404 |
 | plan-notizbuch.webp, postkarte.webp | items/multiple-elements (Einzelobjekte) | Artikelbild, Karten |
+
+---
+
+# Runde 3: Variant E ausgebaut (gewählte Richtung)
+
+Variant E "Bunte Beilage" ist die gewählte Richtung und wurde mit dem echten Markenmaterial ausgebaut (Quellen: `klarekante-erste-outputs.md` und das Personal-Brand-Journal, per Chat geliefert).
+
+Was jetzt echt ist statt Platzhalter:
+
+- **Über mich** (`ueber-mich.html`): die drei Original-Absätze aus den ersten Outputs, wortgetreu. Dazu die Mantras als Sticker-Liste ("Hinfallen, aufstehen, sauber machen, Krone richten, weiter.").
+- **Manifest** (`manifest.html`): die echten fünf Punkte (Direktheit statt Diplomatie, Substanz statt Glanz, Persönlich statt korporativ, Schiefe Ehrlichkeit, Solidarität statt Coaching) mit dem Original-Schluss.
+- **Folge 1** (`beitrag.html`): die Garten-Szene "Familie ist wichtiger. Sagt die Sechsjährige." als erster echter Beitrag der Reihe **Eltern, Chaos und kein Plan**. Der 5-Schritte-Text ist nach `beitrag-plan.html` umgezogen (Rubrik Klartext).
+- **Videos** (`videos.html`, neu in der Navigation): Pilotfolge "Kein Coaching. Kein Hochglanz. Klare Kante." als Video-Karte. Kein Embed, kein YouTube-Pixel: der Klick öffnet YouTube, vorher fließt nichts. Volles Transkript des Intro-Skripts als aufklappbares `<details>` (Regie-Notizen entfernt, die Director-Lebenslauf-Zeile gekürzt wegen der Berufstitel-Regel). Ausblick auf die geplanten Reihen mit Frequenz-Ehrlichkeit.
+- **Geschichten-Index**: Rubriken folgen jetzt den Inhalts-Säulen aus dem Journal. Vorschau-Karten sind ehrlich als Vorschau gekennzeichnet ("Lieber ehrlich leer als künstlich voll").
+- **Für Kids** (`kids.html`): Teaser-Seite an Eltern gerichtet, eigener visueller Block (gestrichelter blauer Rahmen als Vorbote der eigenen Kids-Optik). Versprechen nach Journal: keine Werbung, keine Dark Patterns, kein Brainrot, kein Tracking, KI-Kennzeichnung, eigene Kinder als erste Tester. Bewusst nicht in der Hauptnavigation (strikte Trennung), sondern im Footer als "Für Kids (bald)".
+- **Impressum/Datenschutz**: neuer Abschnitt "Zu den Bildern" mit ehrlicher KI-Kennzeichnung der Illustrationen, plus Klarstellung, dass Videos nicht eingebettet werden.
+
+Eingehaltene Editorial Guidelines aus dem Journal:
+
+- Kein Berufstitel, nirgends. Job nur als "Tech-Welt", wie im Original-Text.
+- Zwillinge: nur Tonis Seite ("seit sechs Jahren kein Kontakt, lange Geschichte"), keine Personalisierung der Mutter, nirgends.
+- Keine Opferrolle: die harten Kindheits-Sätze stehen wie im Original-Über-mich, mit der Original-Pointe "Nicht für Mitleid. Für Solidarität."
+- Tagline-Anker überall: "Ich mach's, weil's raus muss."
+- Kein Newsletter, auch nicht auf der Kids-Seite ("Benachrichtigt werden gibt es nicht").
+- Em-Dash-frei, light only, kein Tracking.
+
+Offen für die nächste Runde (bewusst nicht vorgegriffen):
+
+- Echte Folgetexte für die Vorschau-Karten (Satt-ist-satt, Flur-Logistik, Algorithmen, Lernhefte)
+- Migration nach Astro/Eleventy mit Markdown-Content für die AI-Automation-Pipeline (Maschine bestimmt Wann und Wo, Toni bestimmt Was und Wie-es-klingt)
+- Kids-Pilots nach dem Kids Voice Guide, dann Entscheidung Sub-Brand ja/nein
+- Impressums-Platzhalter füllen, echte YouTube-Video-URL eintragen, sobald die Pilotfolge online ist

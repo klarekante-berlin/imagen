@@ -216,3 +216,58 @@ footer a:hover { color: var(--orange); text-decoration: underline; }
   padding: 0.5rem 1rem; z-index: 10;
 }
 .skiplink:focus { left: 0; }
+
+/* Video-Karte (Pilotfolge, kein Embed, kein Tracking) */
+.video-karte {
+  position: relative; display: block; background: var(--papier);
+  border: 2px solid var(--ink); border-radius: 10px; overflow: hidden;
+  box-shadow: 6px 7px 0 rgba(43, 32, 20, 0.85); text-decoration: none;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.video-karte:hover { transform: translateY(-4px) rotate(-0.5deg); box-shadow: 7px 10px 0 rgba(43, 32, 20, 0.85); }
+.video-karte img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+.video-karte .play {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 4.2rem; height: 4.2rem; border-radius: 999px;
+  background: var(--orange); border: 2px solid var(--ink);
+  color: #fff; font-size: 1.6rem; line-height: 4rem; text-align: center;
+  box-shadow: 3px 4px 0 rgba(43, 32, 20, 0.85);
+}
+.js .video-karte .play { animation: pochen 2.6s ease-in-out infinite; }
+@keyframes pochen {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); }
+  50% { transform: translate(-50%, -50%) scale(1.08); }
+}
+.video-karte .balken {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.4rem;
+  padding: 0.8rem 1rem; border-top: 2px solid var(--ink);
+  font-weight: 800; color: var(--ink); font-size: 1.05rem;
+}
+.video-karte .balken .hinweis { font-weight: 600; font-size: 0.82rem; color: var(--ink-soft); }
+
+/* Transkript */
+.transkript {
+  background: var(--papier); border: 2px solid var(--ink); border-radius: 10px;
+  padding: 1.4rem 1.5rem; margin: 2rem 0;
+}
+.transkript summary { font-weight: 800; cursor: pointer; }
+.transkript summary:hover { color: var(--orange); }
+.transkript p { color: var(--ink-soft); }
+
+/* Mantras (Über mich) */
+.mantras { list-style: none; margin: 1.5rem 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.7rem; }
+.mantras li {
+  font-weight: 800; font-size: 0.95rem; padding: 0.4rem 0.9rem;
+  border: 2px solid var(--ink); border-radius: 999px; background: var(--papier);
+}
+.mantras li:nth-child(odd) { transform: rotate(-1.2deg); }
+.mantras li:nth-child(even) { transform: rotate(1deg); background: var(--gelb); }
+
+/* Kids-Teaser */
+.kids-block {
+  border: 2px dashed var(--blau); border-radius: 10px; background: #F2F7F9;
+  padding: 1.5rem 1.6rem;
+}
+.kids-block h3 { font-weight: 900; font-size: 1.4rem; margin: 0.5rem 0 0.5rem; letter-spacing: -0.015em; }
+.kids-block p { margin: 0 0 0.8rem; color: var(--ink-soft); }
+.kids-block ul { margin: 0 0 0.8rem; padding-left: 1.2rem; color: var(--ink-soft); }
