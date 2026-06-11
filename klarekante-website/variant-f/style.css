@@ -1,0 +1,184 @@
+/* klarekante.berlin, Variant F "Studio-Magazin"
+   Light theme only. Ruhiges, modernes Magazin: strenges Raster, Bildunterschriften,
+   Mauer-Blau, dezente Bewegung. */
+
+:root {
+  --bg: #FAFAF7;
+  --papier: #FFFFFF;
+  --ink: #1C1C1A;
+  --ink-soft: #62625C;
+  --rule: #E3E3DC;
+  --blau: #6F8896;
+  --blau-tief: #4D6877;
+  --sans: "Inter", "IBM Plex Sans", system-ui, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--bg); scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 1.1875rem;
+  line-height: 1.7;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+a { color: var(--blau-tief); text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px; transition: color 0.2s ease; }
+a:hover, a:focus-visible { color: var(--ink); }
+a:focus-visible { outline: 2px solid var(--blau-tief); outline-offset: 2px; }
+
+img { max-width: 100%; height: auto; display: block; }
+
+.wrap { max-width: 70rem; margin: 0 auto; padding: 0 1.4rem; }
+
+/* Lesefortschritt (nur Artikel) */
+.fortschritt {
+  position: fixed; top: 0; left: 0; height: 3px; width: 100%;
+  transform-origin: 0 50%; transform: scaleX(0);
+  background: var(--blau-tief); z-index: 20;
+}
+@supports (animation-timeline: scroll()) {
+  .fortschritt { animation: lesen linear; animation-timeline: scroll(root); }
+  @keyframes lesen { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+}
+
+/* Kopf */
+header.kopf {
+  position: sticky; top: 0; z-index: 10;
+  background: rgba(250, 250, 247, 0.94); backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--rule);
+}
+.kopfzeile { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.8rem; padding: 1rem 0; }
+.wortmarke { margin: 0; font-weight: 700; font-size: 1.1rem; letter-spacing: -0.01em; }
+.wortmarke a { color: var(--ink); text-decoration: none; }
+.wortmarke a:hover { color: var(--blau-tief); }
+.wortmarke .punkt { color: var(--blau-tief); }
+nav.haupt ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 1.5rem; font-size: 0.95rem; }
+nav.haupt a { color: var(--ink-soft); text-decoration: none; position: relative; }
+nav.haupt a::after {
+  content: ""; position: absolute; left: 0; right: 100%; bottom: -4px;
+  height: 1.5px; background: var(--blau-tief); transition: right 0.25s ease;
+}
+nav.haupt a:hover { color: var(--ink); }
+nav.haupt a:hover::after, nav.haupt a[aria-current="page"]::after { right: 0; }
+nav.haupt a[aria-current="page"] { color: var(--ink); }
+
+main { padding: 3.5rem 0 2rem; }
+
+.nummer {
+  font-variant-numeric: tabular-nums; font-size: 0.8rem; font-weight: 600;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--blau-tief);
+}
+.datum { font-size: 0.85rem; color: var(--ink-soft); }
+
+/* Held */
+.held { display: grid; gap: 2.5rem; align-items: end; padding-bottom: 3rem; border-bottom: 1px solid var(--rule); }
+@media (min-width: 56rem) { .held { grid-template-columns: 1fr 1.1fr; } }
+.held h1 {
+  font-weight: 700; letter-spacing: -0.025em;
+  font-size: clamp(1.9rem, 5vw, 3rem); line-height: 1.12; margin: 0.6rem 0 1rem;
+}
+.held p { margin: 0 0 1rem; color: var(--ink-soft); }
+.held figure { margin: 0; }
+.held figure .bild { overflow: hidden; }
+.held img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; transition: transform 0.6s ease; }
+.held figure:hover img { transform: scale(1.03); }
+figcaption { font-size: 0.82rem; color: var(--ink-soft); padding-top: 0.6rem; border-top: 1px solid var(--rule); margin-top: 0.6rem; }
+
+/* Abschnitte */
+.abschnitt { margin: 4rem 0; }
+.abschnitt-kopf { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 2rem; }
+.abschnitt-kopf h2 { font-weight: 700; font-size: 1.5rem; letter-spacing: -0.02em; margin: 0; }
+.abschnitt-kopf .mehr { margin-left: auto; font-size: 0.92rem; }
+
+/* Raster */
+.raster { display: grid; gap: 2.5rem 2rem; }
+@media (min-width: 44rem) { .raster { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 64rem) { .raster { grid-template-columns: 1fr 1fr 1fr; } }
+.eintrag .bild { overflow: hidden; }
+.eintrag img { width: 100%; aspect-ratio: 3 / 2; object-fit: cover; transition: transform 0.6s ease; filter: saturate(0.92); }
+.eintrag:hover img { transform: scale(1.04); filter: saturate(1); }
+.eintrag h3 { font-weight: 700; font-size: 1.25rem; line-height: 1.3; letter-spacing: -0.015em; margin: 0.8rem 0 0.4rem; }
+.eintrag h3 a { color: var(--ink); text-decoration: none; }
+.eintrag h3 a:hover { color: var(--blau-tief); }
+.eintrag p { margin: 0; font-size: 0.95rem; color: var(--ink-soft); }
+
+/* Liste (Index) */
+.indexliste { list-style: none; margin: 0; padding: 0; }
+.indexliste li { display: grid; gap: 1.5rem; padding: 2rem 0; border-top: 1px solid var(--rule); }
+@media (min-width: 52rem) { .indexliste li { grid-template-columns: 7rem 16rem 1fr; align-items: start; } }
+.indexliste .bild { overflow: hidden; }
+.indexliste img { width: 100%; aspect-ratio: 3 / 2; object-fit: cover; transition: transform 0.6s ease; filter: saturate(0.92); }
+.indexliste li:hover img { transform: scale(1.04); filter: saturate(1); }
+.indexliste h2 { font-weight: 700; font-size: 1.4rem; line-height: 1.25; letter-spacing: -0.015em; margin: 0 0 0.4rem; }
+.indexliste h2 a { color: var(--ink); text-decoration: none; }
+.indexliste h2 a:hover { color: var(--blau-tief); }
+.indexliste p { margin: 0; color: var(--ink-soft); font-size: 1rem; }
+
+/* Artikel */
+.artikel { max-width: 42rem; margin: 0 auto; }
+.artikel > header { margin-bottom: 2.5rem; }
+.artikel h1 {
+  font-weight: 700; letter-spacing: -0.025em;
+  font-size: clamp(1.8rem, 5vw, 2.7rem); line-height: 1.15; margin: 0.5rem 0 1rem;
+}
+.artikel .vorspann { font-size: 1.3rem; color: var(--ink-soft); margin: 0; }
+.artikel p { margin: 1.5rem 0; }
+.artikel figure { margin: 2.5rem 0; }
+.artikel figure .bild { overflow: hidden; }
+.artikel figure img { width: 100%; }
+.artikel blockquote {
+  margin: 2.5rem 0; padding: 0 0 0 1.4rem; border-left: 3px solid var(--blau-tief);
+  font-size: 1.35rem; line-height: 1.45; font-weight: 500;
+}
+.artikel blockquote p { margin: 0; }
+
+/* Manifest */
+.manifest ol { list-style: none; margin: 3rem 0; padding: 0; }
+.manifest li { display: grid; grid-template-columns: 4rem 1fr; gap: 1.2rem; padding: 2rem 0; border-top: 1px solid var(--rule); }
+.manifest li .nr { font-size: 1rem; font-weight: 600; color: var(--blau-tief); font-variant-numeric: tabular-nums; }
+.manifest h2 { font-weight: 700; font-size: 1.3rem; letter-spacing: -0.015em; margin: 0 0 0.4rem; }
+.manifest li p { margin: 0; color: var(--ink-soft); }
+
+/* Buttons */
+.btn {
+  display: inline-block; font-weight: 600; font-size: 0.98rem;
+  color: var(--bg); background: var(--ink); border: 1px solid var(--ink); border-radius: 3px;
+  padding: 0.65rem 1.3rem; text-decoration: none; transition: background 0.2s ease, border-color 0.2s ease;
+}
+.btn:hover, .btn:focus-visible { background: var(--blau-tief); border-color: var(--blau-tief); color: #fff; }
+
+/* Footer */
+footer { margin-top: 5rem; border-top: 1px solid var(--rule); padding: 2.2rem 0 3rem; font-size: 0.95rem; color: var(--ink-soft); }
+footer nav ul { list-style: none; margin: 0 0 1rem; padding: 0; display: flex; flex-wrap: wrap; gap: 1.5rem; }
+footer a { color: var(--ink-soft); text-decoration: none; }
+footer a:hover { color: var(--blau-tief); }
+.tagline { color: var(--ink); margin: 0; }
+
+/* 404 */
+.vierohvier { max-width: 42rem; margin: 0 auto; padding: 2rem 0; }
+.vierohvier .gross {
+  font-weight: 700; font-size: clamp(4rem, 16vw, 8rem); line-height: 1;
+  letter-spacing: -0.04em; color: var(--blau-tief); margin: 0 0 1rem;
+}
+
+/* Animationen */
+.js .anim { opacity: 0; transform: translateY(18px); }
+.js .anim.sichtbar { opacity: 1; transform: none; transition: opacity 0.7s ease, transform 0.7s ease; }
+.js .raster .anim.sichtbar:nth-child(2) { transition-delay: 0.1s; }
+.js .raster .anim.sichtbar:nth-child(3) { transition-delay: 0.2s; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .js .anim { opacity: 1; transform: none; }
+  .fortschritt { display: none; }
+}
+
+.skiplink {
+  position: absolute; left: -999px; top: 0; background: var(--ink); color: var(--bg);
+  padding: 0.5rem 1rem; z-index: 30;
+}
+.skiplink:focus { left: 0; }

@@ -130,3 +130,54 @@ Hinweis zur Inhaltslage: Die Begleitdokumente `klarekante-llm-briefing.md` und `
 - Echte Inhalte aus `klarekante-erste-outputs.md` einsetzen (Über-mich-Absätze, Manifest-Originaltexte)
 - Impressums-Platzhalter füllen
 - Eigenes, nicht inszeniertes Bild für Über-mich
+
+---
+
+# Runde 2: Magazin-Variants (D, E, F)
+
+Auf Wunsch nach mehr Magazin-Charakter: drei neue Variants mit echten Bildern und Animationen. Die Bilder sind keine Platzhalter und keine Stockfotos, sondern eigene Illustrationen aus der klarekante-Bildwelt (`klarekante-style/` im Repo), zugeschnitten und als WebP komprimiert nach `klarekante-website/assets/` (12 Bilder, alle unter 250 KB).
+
+Gemeinsame Technik der Magazin-Runde:
+
+- Animationen: ein gemeinsames Mini-Skript `assets/reveal.js` (IntersectionObserver, 25 Zeilen) blendet Elemente mit der Klasse `anim` beim Scrollen ein. Ohne JavaScript bleibt alles sichtbar, bei `prefers-reduced-motion: reduce` wird jede Bewegung abgeschaltet (auch Laufband, Ken Burns, Schweben).
+- Bilder mit `width`/`height` gegen Layout-Shift, `loading="lazy"` unterhalb des Folds, beschreibende deutsche Alt-Texte mit Präfix "Illustration:".
+- Open-Graph-Bild auf Seiten mit Aufmacher.
+- Sonst wie Runde 1: light only, System-Fonts, kein Tracking, kein Cookie-Banner, Berliner Schnauze.
+
+## Variant D: "Kiez-Magazin"
+
+**Begründung:** Nimmt die Tageszeitungs-Idee aus Runde 1 und macht ein echtes Magazin daraus: Cover mit langsamem Ken-Burns-Zoom, eine Aufmacher-Karte, die ins Bild ragt, Rubrik-Karten mit Hover-Zoom, Drop-Cap und Bildunterschriften, die Haltung zeigen ("Sieht ordentlich aus. Hält genau bis zum Frühstück."). Toni als Erzähler mit Bildredaktion. Risiko: am konventionellsten der drei.
+
+- **Farben:** Papier `#F7F2E9`, Karten `#FFFDF8`, Text `#1F1A14`, Akzent Kiosk-Rot `#C8362F`
+- **Typo:** Charter/Georgia für Headlines und Body, Grotesk für Kicker, Datum, Nav (Versalien, gesperrt)
+- **Layout:** Cover 16:9, Karten-Raster 1/2/3-spaltig, Index als Bild-plus-Text-Liste, Lesespalte 46rem
+- **Animation:** Ken Burns auf dem Cover (24s), Scroll-Reveals, Bild-Zoom beim Hover, animierte Nav-Unterstreichung
+
+## Variant E: "Bunte Beilage"
+
+**Begründung:** Die lauteste Variant und die mit der größten Nähe zur Instagram-Bildwelt: Laufband oben ("Kein Newsletter-Popup +++ Kein Funnel +++ Kein Coach"), schwebender Sofa-Chaos-Held, schiefe Polaroid-Karten mit hartem Schlagschatten, Sticker-Badges, Pillen-Nav mit Kipp-Effekt. Der Anti-Gloss-Punkt wird hier mit Humor bewiesen statt mit Härte. Risiko: kann kindlich wirken, ist dafür unverwechselbar und trägt den späteren Kids-Bereich am natürlichsten.
+
+- **Farben:** Cream `#FBF3E4`, Text `#2B2014`, Orange `#E8590C`, Gelb `#F5C518`, Blau `#2D6E8E` (Sticker)
+- **Typo:** eine Grotesk durchgehend, Gewichte 600 bis 900, Marker-Hintergrund im Held
+- **Layout:** Held zweispaltig, Polaroid-Raster, Manifest als gestapelte schiefe Karten mit Nummern-Buttons
+- **Animation:** CSS-Laufband (28s Loop), Schwebe-Animation des Helden, Polaroids richten sich beim Hover auf, federnde Reveals (cubic-bezier mit Überschwingen)
+
+## Variant F: "Studio-Magazin"
+
+**Begründung:** Das ruhige, moderne Magazin: strenges Raster, nummerierte Beiträge (001, 002), Bildunterschriften mit feiner Trennlinie, Sticky-Header mit Blur, Lesefortschritts-Balken im Artikel (CSS scroll-timeline, ohne JavaScript). Bilder leicht entsättigt, erst beim Hover in voller Farbe: Zurückhaltung als Stilmittel. Wirkt am professionellsten gegenüber Presse und Eltern. Risiko: am wenigsten "Berliner Schnauze" im Visuellen, die Stimme muss aus den Texten kommen.
+
+- **Farben:** `#FAFAF7`, Text `#1C1C1A`, Akzent Mauer-Blau `#6F8896` / `#4D6877`
+- **Typo:** eine Sans durchgehend, 19px Body, tabellarische Ziffern für Nummern
+- **Layout:** Held zweispaltig mit Caption, Raster 3-spaltig, Index als Nummer-Bild-Text-Zeilen, Lesespalte 42rem
+- **Animation:** sanfte Reveals mit Stagger, Hover-Zoom plus Sättigung, Sticky-Header, Lesefortschritt nur in Browsern mit scroll-timeline
+
+## Asset-Verzeichnis
+
+| Datei | Quelle in klarekante-style/ | Verwendung |
+|---|---|---|
+| hero-chaos.webp | 3d-animated-style-illustr (Sofa-Chaos, mit Alpha) | Held E, Artikelbild, Karten |
+| toni-portrait.webp | papa/character-sheet (Daumen-hoch-Pose) | Über mich, Teaser |
+| familie-auto.webp | 3d-a-family-of-five (Kombi) | Karten |
+| roadtrip-kueste.webp | umgebungen/enivornment-sheet (Küstenpanel) | Held F |
+| berlin-panorama.webp, -alexanderplatz, -eastside, -reichstag, -ubahn, -currywurst | umgebungen/environment-sheet Berlin (Einzelpanels) | Cover D, Rubriken, 404 |
+| plan-notizbuch.webp, postkarte.webp | items/multiple-elements (Einzelobjekte) | Artikelbild, Karten |

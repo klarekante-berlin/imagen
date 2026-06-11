@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>klarekante.berlin: 3 Website-Variants</title>
-  <meta name="description" content="Drei Entwurfs-Variants für klarekante.berlin: Berlin Tageszeitung, Punk Manifest, Direkt und Sauber.">
+  <title>klarekante.berlin: Website-Variants</title>
+  <meta name="description" content="Entwurfs-Variants für klarekante.berlin: drei textpure und drei magazinige, animierte Richtungen.">
   <meta name="robots" content="noindex">
   <style>
     * { box-sizing: border-box; }
@@ -13,68 +13,101 @@
       font-family: system-ui, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
       font-size: 1.125rem; line-height: 1.6;
     }
-    .wrap { max-width: 50rem; margin: 0 auto; padding: 3rem 1.4rem; }
+    .wrap { max-width: 56rem; margin: 0 auto; padding: 3rem 1.4rem; }
     h1 { font-size: clamp(1.8rem, 5vw, 2.6rem); letter-spacing: -0.02em; line-height: 1.15; margin: 0 0 0.6rem; }
+    h2 { font-size: 1.3rem; letter-spacing: -0.01em; margin: 3rem 0 1rem; }
     .untertitel { color: #5C594F; margin: 0 0 2.5rem; }
-    .karte { border: 1px solid #DDD9CC; background: #fff; padding: 1.5rem; margin: 0 0 1.5rem; }
-    .karte h2 { margin: 0 0 0.3rem; font-size: 1.35rem; letter-spacing: -0.01em; }
-    .karte .kicker { font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 0.6rem; }
-    .karte p { margin: 0 0 1rem; color: #44423B; }
+    .karten { display: grid; gap: 1.2rem; }
+    @media (min-width: 44rem) { .karten { grid-template-columns: 1fr 1fr 1fr; } }
+    .karte { border: 1px solid #DDD9CC; background: #fff; padding: 1.2rem; display: flex; flex-direction: column; }
+    .karte h3 { margin: 0 0 0.3rem; font-size: 1.15rem; letter-spacing: -0.01em; }
+    .karte .kicker { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 0.5rem; }
+    .karte p { margin: 0 0 1rem; color: #44423B; font-size: 0.95rem; flex: 1; }
+    .karte img { width: 100%; border: 1px solid #DDD9CC; margin-bottom: 0.8rem; }
     .karte a.btn {
-      display: inline-block; font-weight: 600; font-size: 1rem; text-decoration: none;
-      color: #fff; background: #21201C; padding: 0.55rem 1.1rem; border-radius: 4px;
+      display: inline-block; font-weight: 600; font-size: 0.95rem; text-decoration: none;
+      color: #fff; background: #21201C; padding: 0.5rem 1rem; border-radius: 4px; align-self: start;
     }
     .karte a.btn:hover, .karte a.btn:focus-visible { background: #B2664E; }
+    .d .kicker { color: #C8362F; }
+    .e .kicker { color: #E8590C; }
+    .f .kicker { color: #4D6877; }
     .a .kicker { color: #C8362F; }
     .b .kicker { color: #000; background: #F2FF00; display: inline-block; padding: 0 0.3em; }
     .c .kicker { color: #B2664E; }
-    table { border-collapse: collapse; width: 100%; font-size: 0.95rem; margin: 2rem 0; }
-    th, td { border: 1px solid #DDD9CC; padding: 0.5rem 0.7rem; text-align: left; vertical-align: top; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin: 1.5rem 0; }
+    th, td { border: 1px solid #DDD9CC; padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; }
     th { background: #F2EFE6; }
     .hinweis { font-size: 0.9rem; color: #5C594F; }
   </style>
 </head>
 <body>
   <main class="wrap">
-    <h1>klarekante.berlin: drei Variants, eine Marke</h1>
-    <p class="untertitel">Alle drei sind light, schnell, in Tonis Stimme und ohne Tracking. Sie unterscheiden sich darin, wie laut sie die klare Kante visuell machen. Details und Designsysteme stehen im README.</p>
+    <h1>klarekante.berlin: sechs Variants, eine Marke</h1>
+    <p class="untertitel">Alle light, schnell, in Tonis Stimme und ohne Tracking. Runde 1 (A bis C) ist textpur. Runde 2 (D bis F) ist magazinig: eigene Illustrationen aus der klarekante-Bildwelt, dezente Animationen, mehr Bühne. Details stehen im README.</p>
 
-    <article class="karte a">
-      <p class="kicker">Variant A · visuell mittel</p>
-      <h2>Berlin Tageszeitung</h2>
-      <p>Editorial wie eine kluge Wochenzeitung. Serif-Body, Grotesk-Headlines, Kiosk-Rot, zwei Spalten auf Desktop, Drop-Cap im Artikel. Toni als Denker und Erzähler.</p>
-      <p><a class="btn" href="variant-a/index.html">Variant A ansehen</a></p>
-    </article>
-
-    <article class="karte b">
-      <p class="kicker">Variant B · visuell laut</p>
-      <h2>Punk Manifest</h2>
-      <p>Brutalist und bewusst roh. Mono-Stempel wie [001] und [Klartext], harte Linien, Neon-Gelb als einziger Farbtupfer, asymmetrische Blöcke. Die Anti-Gloss-These wird vom Layout bewiesen, nicht erklärt.</p>
-      <p><a class="btn" href="variant-b/index.html">Variant B ansehen</a></p>
-    </article>
-
-    <article class="karte c">
-      <p class="kicker">Variant C · visuell leise</p>
-      <h2>Direkt &amp; Sauber</h2>
-      <p>Minimal, einspaltig, viel Luft, ein Sans-Serif, gedämpftes Backstein-Rot. Das Design tritt zurück, die Texte tragen. Drei Nav-Items, fertig.</p>
-      <p><a class="btn" href="variant-c/index.html">Variant C ansehen</a></p>
-    </article>
+    <h2>Runde 2: Magazin, bebildert und animiert</h2>
+    <div class="karten">
+      <article class="karte d">
+        <img src="assets/berlin-panorama.webp" alt="Vorschau: Berlin-Illustration mit Brandenburger Tor" loading="lazy">
+        <p class="kicker">Variant D · editorial</p>
+        <h3>Kiez-Magazin</h3>
+        <p>Wochenzeitungs-Cover mit Ken-Burns-Aufmacher, Rubrik-Karten, Drop-Cap und Bildunterschriften. Serif trifft Kiosk-Rot.</p>
+        <a class="btn" href="variant-d/index.html">Ansehen</a>
+      </article>
+      <article class="karte e">
+        <img src="assets/hero-chaos.webp" alt="Vorschau: Familienchaos-Illustration auf dem Sofa" loading="lazy">
+        <p class="kicker">Variant E · laut</p>
+        <h3>Bunte Beilage</h3>
+        <p>Familien-Magazin mit Laufband, Stickern, schiefen Polaroid-Karten und schwebendem Held. Am nächsten an der Instagram-Bildwelt.</p>
+        <a class="btn" href="variant-e/index.html">Ansehen</a>
+      </article>
+      <article class="karte f">
+        <img src="assets/roadtrip-kueste.webp" alt="Vorschau: Roadtrip-Illustration an der Küste" loading="lazy">
+        <p class="kicker">Variant F · ruhig</p>
+        <h3>Studio-Magazin</h3>
+        <p>Strenges Raster, nummerierte Beiträge, Bildunterschriften, Sticky-Header, Lesefortschritt. Modern und gelassen.</p>
+        <a class="btn" href="variant-f/index.html">Ansehen</a>
+      </article>
+    </div>
 
     <table>
-      <caption class="hinweis">Vergleich auf einen Blick</caption>
+      <caption class="hinweis">Runde 2 im Vergleich</caption>
       <thead>
-        <tr><th>Kriterium</th><th>A · Tageszeitung</th><th>B · Punk Manifest</th><th>C · Direkt &amp; Sauber</th></tr>
+        <tr><th>Kriterium</th><th>D · Kiez-Magazin</th><th>E · Bunte Beilage</th><th>F · Studio-Magazin</th></tr>
       </thead>
       <tbody>
         <tr><td>Lautstärke</td><td>Mittel</td><td>Laut</td><td>Leise</td></tr>
-        <tr><td>Typo</td><td>Serif + Grotesk</td><td>Mono + Grotesk</td><td>Sans durchgängig</td></tr>
-        <tr><td>Layout</td><td>Mehrspaltig, dicht</td><td>Asymmetrisch, brechend</td><td>Einspaltig, luftig</td></tr>
-        <tr><td>Akzent</td><td>Kiosk-Rot #C8362F</td><td>Neon-Gelb #F2FF00</td><td>Backstein-Rot #B2664E</td></tr>
-        <tr><td>Persönlichkeit</td><td>Denker, Erzähler</td><td>Punk, These</td><td>Vertrauenswürdig, bescheiden</td></tr>
+        <tr><td>Typo</td><td>Serif + Grotesk</td><td>Grotesk, fett</td><td>Sans, streng</td></tr>
+        <tr><td>Bildsprache</td><td>Cover und Rubriken</td><td>Polaroids und Sticker</td><td>Raster und Captions</td></tr>
+        <tr><td>Animation</td><td>Ken Burns, Reveals, Hover-Zoom</td><td>Laufband, Schweben, Kipp-Karten</td><td>Reveals, Lesefortschritt, Sticky-Header</td></tr>
+        <tr><td>Akzent</td><td>Kiosk-Rot #C8362F</td><td>Orange #E8590C + Gelb #F5C518</td><td>Mauer-Blau #6F8896</td></tr>
       </tbody>
     </table>
 
-    <p class="hinweis">Jede Variant hat 8 Seiten: Startseite, Geschichten-Index, Einzelbeitrag, Manifest, Über mich, Kontakt, Impressum &amp; Datenschutz, 404. Statisches HTML und CSS, keine Skripte, keine Webfonts, keine Cookies.</p>
+    <h2>Runde 1: textpur, ohne Bilder</h2>
+    <div class="karten">
+      <article class="karte a">
+        <p class="kicker">Variant A · editorial</p>
+        <h3>Berlin Tageszeitung</h3>
+        <p>Editorial wie eine kluge Wochenzeitung. Serif-Body, Grotesk-Headlines, zwei Spalten, Drop-Cap.</p>
+        <a class="btn" href="variant-a/index.html">Ansehen</a>
+      </article>
+      <article class="karte b">
+        <p class="kicker">Variant B · laut</p>
+        <h3>Punk Manifest</h3>
+        <p>Brutalist und bewusst roh. Mono-Stempel, harte Linien, Neon-Gelb als einziger Farbtupfer.</p>
+        <a class="btn" href="variant-b/index.html">Ansehen</a>
+      </article>
+      <article class="karte c">
+        <p class="kicker">Variant C · leise</p>
+        <h3>Direkt &amp; Sauber</h3>
+        <p>Minimal, einspaltig, viel Luft, ein Sans-Serif. Das Design tritt zurück, die Texte tragen.</p>
+        <a class="btn" href="variant-c/index.html">Ansehen</a>
+      </article>
+    </div>
+
+    <p class="hinweis" style="margin-top:2.5rem">Jede Variant hat 8 Seiten: Startseite, Geschichten-Index, Einzelbeitrag, Manifest, Über mich, Kontakt, Impressum &amp; Datenschutz, 404. Alle Bilder sind eigene Illustrationen aus der klarekante-Bildwelt (Ordner klarekante-style), als WebP komprimiert. Animationen respektieren prefers-reduced-motion, ohne JavaScript bleibt alles lesbar.</p>
   </main>
 </body>
 </html>

@@ -1,0 +1,216 @@
+/* klarekante.berlin, Variant D "Kiez-Magazin"
+   Light theme only. Magazin-Cover, große Bilder, Serif-Display, Kiosk-Rot. */
+
+:root {
+  --bg: #F7F2E9;
+  --papier: #FFFDF8;
+  --ink: #1F1A14;
+  --ink-soft: #57503F;
+  --rule: #DDD5C2;
+  --rot: #C8362F;
+  --orange: #E2731B;
+  --serif: "Charter", "Bitstream Charter", Georgia, "Times New Roman", serif;
+  --grotesk: "Inter Tight", "Inter", "Helvetica Neue", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--bg); scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 1.125rem;
+  line-height: 1.65;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+a { color: var(--ink); text-decoration-color: var(--rot); text-decoration-thickness: 2px; text-underline-offset: 3px; transition: color 0.2s ease; }
+a:hover, a:focus-visible { color: var(--rot); }
+a:focus-visible { outline: 2px solid var(--rot); outline-offset: 2px; }
+
+img { max-width: 100%; height: auto; display: block; }
+
+.wrap { max-width: 74rem; margin: 0 auto; padding: 0 1.25rem; }
+
+/* Kopf */
+.kopfleiste {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.5rem;
+  padding: 0.55rem 0; border-bottom: 1px solid var(--rule);
+  font-family: var(--grotesk); font-size: 0.78rem; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--ink-soft);
+}
+.wortmarke {
+  margin: 0.9rem 0 0.5rem; text-align: center;
+  font-family: var(--serif); font-weight: 700; letter-spacing: -0.02em;
+  font-size: clamp(2.2rem, 7vw, 4rem); line-height: 1;
+}
+.wortmarke a { text-decoration: none; }
+.wortmarke a:hover { color: var(--ink); }
+.wortmarke .punkt { color: var(--rot); }
+.untertitel {
+  text-align: center; margin: 0 0 0.9rem;
+  font-family: var(--grotesk); font-size: 0.85rem; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-soft);
+}
+nav.haupt { border-top: 3px double var(--ink); border-bottom: 1px solid var(--ink); }
+nav.haupt ul {
+  list-style: none; margin: 0; padding: 0.6rem 0;
+  display: flex; flex-wrap: wrap; gap: 1.6rem; justify-content: center;
+  font-family: var(--grotesk); font-weight: 600; font-size: 0.92rem;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+nav.haupt a { text-decoration: none; position: relative; }
+nav.haupt a::after {
+  content: ""; position: absolute; left: 0; right: 100%; bottom: -4px;
+  height: 2px; background: var(--rot); transition: right 0.25s ease;
+}
+nav.haupt a:hover::after, nav.haupt a[aria-current="page"]::after { right: 0; }
+nav.haupt a[aria-current="page"] { color: var(--rot); }
+
+/* Cover */
+.cover { position: relative; margin: 1.6rem 0 0; overflow: hidden; border: 1px solid var(--ink); }
+.cover img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+.js .cover img { animation: kenburns 24s ease-in-out infinite alternate; }
+@keyframes kenburns {
+  from { transform: scale(1) translateX(0); }
+  to   { transform: scale(1.08) translateX(-1.5%); }
+}
+.cover-karte {
+  position: relative; background: var(--papier); border: 1px solid var(--ink);
+  padding: 1.4rem 1.6rem; margin: -3.5rem 1rem 0; box-shadow: 0 10px 30px rgba(31, 26, 20, 0.12);
+}
+@media (min-width: 56rem) { .cover-karte { max-width: 44rem; margin: -7rem auto 0 4rem; } }
+.rubrik {
+  font-family: var(--grotesk); font-weight: 700; font-size: 0.78rem;
+  text-transform: uppercase; letter-spacing: 0.14em; color: var(--rot);
+}
+.cover-karte h1 {
+  font-family: var(--serif); font-weight: 700; letter-spacing: -0.01em;
+  font-size: clamp(1.6rem, 4vw, 2.5rem); line-height: 1.12; margin: 0.4rem 0 0.6rem;
+}
+.cover-karte p { margin: 0; color: var(--ink-soft); font-size: 1.05rem; }
+.bildzeile { font-family: var(--grotesk); font-size: 0.78rem; color: var(--ink-soft); margin: 0.5rem 0 0; }
+
+/* Abschnitte */
+.abschnitt { margin: 3.5rem 0; }
+.abschnitt-kopf {
+  display: flex; align-items: baseline; gap: 1rem; margin-bottom: 1.4rem;
+  border-bottom: 3px double var(--ink); padding-bottom: 0.5rem;
+}
+.abschnitt-kopf h2 {
+  font-family: var(--grotesk); font-weight: 800; font-size: 1.05rem;
+  text-transform: uppercase; letter-spacing: 0.12em; margin: 0;
+}
+.abschnitt-kopf .mehr { margin-left: auto; font-family: var(--grotesk); font-size: 0.85rem; }
+
+/* Karten-Raster */
+.raster { display: grid; gap: 1.6rem; }
+@media (min-width: 44rem) { .raster { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 64rem) { .raster { grid-template-columns: 1fr 1fr 1fr; } }
+.karte { background: var(--papier); border: 1px solid var(--ink); display: flex; flex-direction: column; }
+.karte .bild { overflow: hidden; border-bottom: 1px solid var(--ink); }
+.karte img { width: 100%; aspect-ratio: 3 / 2; object-fit: cover; transition: transform 0.5s ease; }
+.karte:hover img { transform: scale(1.05); }
+.karte .text { padding: 1rem 1.1rem 1.2rem; }
+.karte h3 { font-family: var(--serif); font-size: 1.3rem; line-height: 1.2; margin: 0.3rem 0 0.5rem; }
+.karte h3 a { text-decoration: none; }
+.karte p { margin: 0; font-size: 0.98rem; color: var(--ink-soft); }
+.datum { font-family: var(--grotesk); font-size: 0.78rem; color: var(--ink-soft); }
+
+/* Quer-Teaser */
+.quer { display: grid; gap: 0; background: var(--papier); border: 1px solid var(--ink); }
+@media (min-width: 56rem) { .quer { grid-template-columns: 1.1fr 1fr; } }
+.quer .bild { overflow: hidden; }
+.quer img { width: 100%; height: 100%; object-fit: cover; aspect-ratio: 4 / 3; transition: transform 0.5s ease; }
+.quer:hover img { transform: scale(1.04); }
+.quer .text { padding: 1.6rem; align-self: center; }
+.quer h3 { font-family: var(--serif); font-size: clamp(1.4rem, 3vw, 1.9rem); line-height: 1.15; margin: 0.4rem 0 0.7rem; }
+.quer h3 a { text-decoration: none; }
+@media (min-width: 56rem) { .quer .bild { border-right: 1px solid var(--ink); } }
+
+/* Index-Liste mit Bild */
+.indexliste { list-style: none; margin: 0; padding: 0; }
+.indexliste li { border-bottom: 1px solid var(--rule); padding: 1.5rem 0; display: grid; gap: 1.2rem; }
+@media (min-width: 48rem) { .indexliste li { grid-template-columns: 14rem 1fr; align-items: start; } }
+.indexliste .bild { overflow: hidden; border: 1px solid var(--ink); }
+.indexliste img { width: 100%; aspect-ratio: 3 / 2; object-fit: cover; transition: transform 0.5s ease; }
+.indexliste li:hover img { transform: scale(1.05); }
+.indexliste h2 { font-family: var(--serif); font-size: 1.5rem; line-height: 1.2; margin: 0.25rem 0 0.5rem; }
+.indexliste h2 a { text-decoration: none; }
+.indexliste p { margin: 0; color: var(--ink-soft); }
+
+/* Artikel */
+.artikel { max-width: 46rem; margin: 0 auto; padding: 2.4rem 0 1rem; }
+.artikel > header h1 {
+  font-family: var(--serif); font-weight: 700; letter-spacing: -0.01em;
+  font-size: clamp(1.9rem, 5vw, 2.8rem); line-height: 1.1; margin: 0.4rem 0 0.8rem;
+}
+.artikel .vorspann { font-size: 1.25rem; color: var(--ink-soft); margin: 0 0 1.4rem; }
+.artikel figure { margin: 2rem 0; border: 1px solid var(--ink); background: var(--papier); }
+.artikel figure img { width: 100%; }
+.artikel figcaption { font-family: var(--grotesk); font-size: 0.82rem; color: var(--ink-soft); padding: 0.5rem 0.8rem; border-top: 1px solid var(--rule); }
+.dropcap::first-letter {
+  font-family: var(--serif); font-weight: 700; color: var(--rot);
+  float: left; font-size: 3.6em; line-height: 0.8; padding: 0.05em 0.12em 0 0;
+}
+.artikel blockquote {
+  margin: 2.2rem 0; padding: 0 0 0 1.2rem; border-left: 4px solid var(--rot);
+  font-family: var(--serif); font-style: italic; font-size: 1.4rem; line-height: 1.35;
+}
+.artikel blockquote p { margin: 0; }
+
+/* Manifest */
+.manifest ol { list-style: none; counter-reset: punkt; margin: 2.4rem 0; padding: 0; }
+.manifest ol li { counter-increment: punkt; padding: 1.6rem 0; border-top: 1px solid var(--rule); display: grid; grid-template-columns: 3.4rem 1fr; gap: 1rem; }
+.manifest ol li::before {
+  content: counter(punkt);
+  font-family: var(--serif); font-weight: 700; font-size: 2.4rem; color: var(--rot); line-height: 1;
+}
+.manifest ol h2 { font-family: var(--serif); font-size: 1.4rem; margin: 0 0 0.4rem; }
+.manifest ol p { margin: 0; color: var(--ink-soft); }
+
+/* Buttons */
+.btn {
+  display: inline-block; font-family: var(--grotesk); font-weight: 700; font-size: 0.92rem;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--bg); background: var(--ink); border: 2px solid var(--ink);
+  padding: 0.6rem 1.2rem; text-decoration: none; transition: background 0.2s ease, border-color 0.2s ease;
+}
+.btn:hover, .btn:focus-visible { background: var(--rot); border-color: var(--rot); color: #fff; }
+
+/* Footer */
+footer {
+  margin-top: 4rem; border-top: 3px double var(--ink); padding: 1.8rem 0 2.6rem;
+  font-family: var(--grotesk); font-size: 0.9rem; color: var(--ink-soft);
+}
+footer nav ul { list-style: none; margin: 0 0 0.9rem; padding: 0; display: flex; flex-wrap: wrap; gap: 1.3rem; }
+footer a { text-decoration: none; }
+footer a:hover { color: var(--rot); text-decoration: underline; }
+.tagline { font-family: var(--serif); font-style: italic; font-size: 1.1rem; color: var(--ink); margin: 0; }
+
+/* 404 */
+.vierohvier { max-width: 46rem; margin: 0 auto; padding: 3rem 0; }
+.vierohvier .gross {
+  font-family: var(--serif); font-weight: 700; font-size: clamp(4.5rem, 18vw, 9rem);
+  line-height: 1; color: var(--rot); margin: 0;
+}
+.vierohvier img { border: 1px solid var(--ink); margin: 1.6rem 0; }
+
+/* Animationen */
+.js .anim { opacity: 0; transform: translateY(22px); }
+.js .anim.sichtbar { opacity: 1; transform: none; transition: opacity 0.6s ease, transform 0.6s ease; }
+.js .anim.sichtbar:nth-child(2) { transition-delay: 0.08s; }
+.js .anim.sichtbar:nth-child(3) { transition-delay: 0.16s; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .js .anim { opacity: 1; transform: none; }
+}
+
+.skiplink {
+  position: absolute; left: -999px; top: 0; background: var(--ink); color: var(--bg);
+  padding: 0.5rem 1rem; font-family: var(--grotesk); z-index: 10;
+}
+.skiplink:focus { left: 0; }
