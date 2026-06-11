@@ -1,0 +1,154 @@
+/* klarekante.berlin, Variant B "Punk Manifest"
+   Light theme only. Brutalist, Mono + Grotesk, eine laute Akzentfarbe. */
+
+:root {
+  --bg: #FFFFFF;
+  --ink: #000000;
+  --grau: #555550;
+  --akzent: #F2FF00;
+  --mono: ui-monospace, "JetBrains Mono", "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+  --grotesk: "Helvetica Now", "Helvetica Neue", Helvetica, "Inter", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--bg); }
+
+body {
+  margin: 0;
+  font-family: var(--grotesk);
+  font-size: 1.125rem;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+a { color: var(--ink); text-decoration: underline; text-decoration-thickness: 3px; text-underline-offset: 3px; }
+a:hover, a:focus-visible { background: var(--akzent); text-decoration: none; }
+a:focus-visible { outline: 3px solid var(--ink); outline-offset: 1px; }
+
+.wrap { max-width: 70rem; margin: 0 auto; padding: 0 1.25rem; }
+
+.stempel { font-family: var(--mono); font-size: 0.8rem; letter-spacing: 0.02em; }
+mark, .gelb { background: var(--akzent); color: var(--ink); padding: 0 0.15em; }
+
+/* Header */
+header.kopf { border-bottom: 3px solid var(--ink); }
+.kopf-zeile {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.5rem;
+  padding: 0.5rem 0; font-family: var(--mono); font-size: 0.75rem;
+  border-bottom: 1px solid var(--ink);
+}
+.wortmarke {
+  margin: 0; padding: 1rem 0 0.6rem;
+  font-family: var(--grotesk); font-weight: 900; letter-spacing: -0.04em;
+  font-size: clamp(2.2rem, 9vw, 5.5rem); line-height: 0.95; text-transform: uppercase;
+}
+.wortmarke a { text-decoration: none; }
+.wortmarke a:hover { background: none; }
+.wortmarke .berlin { background: var(--akzent); padding: 0 0.08em; }
+
+nav.haupt ul {
+  list-style: none; margin: 0; padding: 0.6rem 0 0.9rem;
+  display: flex; flex-wrap: wrap; gap: 0.5rem 1.6rem;
+  font-family: var(--mono); font-size: 0.95rem;
+}
+nav.haupt a { text-decoration: none; border: 2px solid transparent; padding: 0.1rem 0.3rem; }
+nav.haupt a:hover { background: var(--akzent); }
+nav.haupt a[aria-current="page"] { border-color: var(--ink); background: var(--ink); color: var(--bg); }
+
+/* Anker-Block Startseite, absichtlich asymmetrisch */
+.anker {
+  margin: 2.2rem 0; padding: 1.4rem; border: 3px solid var(--ink);
+  max-width: 52rem;
+}
+@media (min-width: 60rem) { .anker { margin-left: 14%; } }
+.anker h1 {
+  margin: 0.3rem 0 0.8rem;
+  font-weight: 900; letter-spacing: -0.02em; text-transform: none;
+  font-size: clamp(1.6rem, 4.5vw, 2.8rem); line-height: 1.05;
+}
+.anker p { margin: 0; }
+
+/* Beitrags-Index: Mono-Stempel links, Headline rechts */
+.liste { list-style: none; margin: 2rem 0; padding: 0; border-top: 3px solid var(--ink); }
+.liste li {
+  display: grid; gap: 0.3rem 1.5rem; padding: 1.1rem 0;
+  border-bottom: 1px solid var(--ink);
+}
+@media (min-width: 48rem) { .liste li { grid-template-columns: 11rem 1fr; } }
+.liste .meta { font-family: var(--mono); font-size: 0.8rem; }
+.liste .meta .nr { display: block; }
+.liste h2, .liste h3 {
+  margin: 0; font-weight: 800; letter-spacing: -0.015em;
+  font-size: 1.4rem; line-height: 1.2;
+}
+.liste h2 a, .liste h3 a { text-decoration: none; }
+.liste h2 a:hover, .liste h3 a:hover { background: var(--akzent); }
+.liste p.teaser { margin: 0.3rem 0 0; color: var(--grau); font-size: 1rem; }
+
+/* Artikel */
+.artikel { max-width: 46rem; margin: 0 auto; padding: 2.5rem 0; }
+@media (min-width: 60rem) { .artikel { margin-left: 18%; } }
+.artikel header { margin-bottom: 1.6rem; }
+.artikel h1 {
+  font-weight: 900; letter-spacing: -0.025em;
+  font-size: clamp(1.9rem, 6vw, 3.2rem); line-height: 1.02; margin: 0.5rem 0 1rem;
+}
+.artikel .vorspann { font-size: 1.25rem; font-weight: 600; }
+.zitat {
+  margin: 2.2rem 0; padding: 0;
+  font-weight: 900; letter-spacing: -0.02em;
+  font-size: clamp(1.5rem, 4vw, 2.2rem); line-height: 1.1;
+}
+@media (min-width: 60rem) { .zitat { margin-left: -18%; } }
+.zitat p { margin: 0; display: inline; background: var(--akzent); box-decoration-break: clone; -webkit-box-decoration-break: clone; padding: 0 0.1em; }
+
+/* Manifest */
+.manifest { max-width: 52rem; padding: 2.5rem 0; }
+.manifest ol { list-style: none; margin: 2rem 0; padding: 0; }
+.manifest li { border: 3px solid var(--ink); padding: 1.2rem; margin: 0 0 1.2rem; }
+@media (min-width: 60rem) {
+  .manifest li:nth-child(odd) { margin-right: 12%; }
+  .manifest li:nth-child(even) { margin-left: 12%; }
+}
+.manifest li .nr { font-family: var(--mono); font-size: 0.8rem; display: block; margin-bottom: 0.3rem; }
+.manifest h2 { margin: 0 0 0.4rem; font-weight: 900; font-size: 1.5rem; letter-spacing: -0.02em; }
+.manifest li p { margin: 0; }
+
+/* Buttons: eckig, direkt */
+.btn {
+  display: inline-block; font-family: var(--mono); font-size: 0.95rem; font-weight: 700;
+  color: var(--ink); background: var(--bg); border: 3px solid var(--ink);
+  padding: 0.55rem 1rem; text-decoration: none; cursor: pointer;
+}
+.btn:hover, .btn:focus-visible { background: var(--akzent); }
+.btn-voll { background: var(--ink); color: var(--bg); }
+.btn-voll:hover, .btn-voll:focus-visible { background: var(--akzent); color: var(--ink); }
+
+/* Footer */
+footer { border-top: 3px solid var(--ink); margin-top: 3rem; padding: 1.4rem 0 2.4rem; }
+footer nav ul {
+  list-style: none; margin: 0 0 1rem; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem;
+  font-family: var(--mono); font-size: 0.85rem;
+}
+footer a { text-decoration: none; }
+footer a:hover { background: var(--akzent); }
+.tagline { font-weight: 900; font-size: 1.2rem; letter-spacing: -0.01em; margin: 0; }
+.fussnote { font-family: var(--mono); font-size: 0.75rem; color: var(--grau); margin: 0.8rem 0 0; }
+
+/* 404 */
+.vierohvier { padding: 3rem 0; }
+.vierohvier .gross {
+  font-weight: 900; font-size: clamp(5rem, 28vw, 16rem); line-height: 0.85;
+  letter-spacing: -0.05em; margin: 0;
+}
+.vierohvier .gross span { background: var(--akzent); }
+.vierohvier h1 { font-size: clamp(1.6rem, 5vw, 2.6rem); margin: 1rem 0 0.5rem; font-weight: 900; }
+
+.skiplink {
+  position: absolute; left: -999px; top: 0; background: var(--ink); color: var(--bg);
+  padding: 0.5rem 1rem; font-family: var(--mono); z-index: 10;
+}
+.skiplink:focus { left: 0; }

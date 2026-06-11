@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>klarekante.berlin: 3 Website-Variants</title>
+  <meta name="description" content="Drei Entwurfs-Variants für klarekante.berlin: Berlin Tageszeitung, Punk Manifest, Direkt und Sauber.">
+  <meta name="robots" content="noindex">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: #FBFAF6; color: #21201C;
+      font-family: system-ui, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      font-size: 1.125rem; line-height: 1.6;
+    }
+    .wrap { max-width: 50rem; margin: 0 auto; padding: 3rem 1.4rem; }
+    h1 { font-size: clamp(1.8rem, 5vw, 2.6rem); letter-spacing: -0.02em; line-height: 1.15; margin: 0 0 0.6rem; }
+    .untertitel { color: #5C594F; margin: 0 0 2.5rem; }
+    .karte { border: 1px solid #DDD9CC; background: #fff; padding: 1.5rem; margin: 0 0 1.5rem; }
+    .karte h2 { margin: 0 0 0.3rem; font-size: 1.35rem; letter-spacing: -0.01em; }
+    .karte .kicker { font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 0.6rem; }
+    .karte p { margin: 0 0 1rem; color: #44423B; }
+    .karte a.btn {
+      display: inline-block; font-weight: 600; font-size: 1rem; text-decoration: none;
+      color: #fff; background: #21201C; padding: 0.55rem 1.1rem; border-radius: 4px;
+    }
+    .karte a.btn:hover, .karte a.btn:focus-visible { background: #B2664E; }
+    .a .kicker { color: #C8362F; }
+    .b .kicker { color: #000; background: #F2FF00; display: inline-block; padding: 0 0.3em; }
+    .c .kicker { color: #B2664E; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.95rem; margin: 2rem 0; }
+    th, td { border: 1px solid #DDD9CC; padding: 0.5rem 0.7rem; text-align: left; vertical-align: top; }
+    th { background: #F2EFE6; }
+    .hinweis { font-size: 0.9rem; color: #5C594F; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <h1>klarekante.berlin: drei Variants, eine Marke</h1>
+    <p class="untertitel">Alle drei sind light, schnell, in Tonis Stimme und ohne Tracking. Sie unterscheiden sich darin, wie laut sie die klare Kante visuell machen. Details und Designsysteme stehen im README.</p>
+
+    <article class="karte a">
+      <p class="kicker">Variant A · visuell mittel</p>
+      <h2>Berlin Tageszeitung</h2>
+      <p>Editorial wie eine kluge Wochenzeitung. Serif-Body, Grotesk-Headlines, Kiosk-Rot, zwei Spalten auf Desktop, Drop-Cap im Artikel. Toni als Denker und Erzähler.</p>
+      <p><a class="btn" href="variant-a/index.html">Variant A ansehen</a></p>
+    </article>
+
+    <article class="karte b">
+      <p class="kicker">Variant B · visuell laut</p>
+      <h2>Punk Manifest</h2>
+      <p>Brutalist und bewusst roh. Mono-Stempel wie [001] und [Klartext], harte Linien, Neon-Gelb als einziger Farbtupfer, asymmetrische Blöcke. Die Anti-Gloss-These wird vom Layout bewiesen, nicht erklärt.</p>
+      <p><a class="btn" href="variant-b/index.html">Variant B ansehen</a></p>
+    </article>
+
+    <article class="karte c">
+      <p class="kicker">Variant C · visuell leise</p>
+      <h2>Direkt &amp; Sauber</h2>
+      <p>Minimal, einspaltig, viel Luft, ein Sans-Serif, gedämpftes Backstein-Rot. Das Design tritt zurück, die Texte tragen. Drei Nav-Items, fertig.</p>
+      <p><a class="btn" href="variant-c/index.html">Variant C ansehen</a></p>
+    </article>
+
+    <table>
+      <caption class="hinweis">Vergleich auf einen Blick</caption>
+      <thead>
+        <tr><th>Kriterium</th><th>A · Tageszeitung</th><th>B · Punk Manifest</th><th>C · Direkt &amp; Sauber</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Lautstärke</td><td>Mittel</td><td>Laut</td><td>Leise</td></tr>
+        <tr><td>Typo</td><td>Serif + Grotesk</td><td>Mono + Grotesk</td><td>Sans durchgängig</td></tr>
+        <tr><td>Layout</td><td>Mehrspaltig, dicht</td><td>Asymmetrisch, brechend</td><td>Einspaltig, luftig</td></tr>
+        <tr><td>Akzent</td><td>Kiosk-Rot #C8362F</td><td>Neon-Gelb #F2FF00</td><td>Backstein-Rot #B2664E</td></tr>
+        <tr><td>Persönlichkeit</td><td>Denker, Erzähler</td><td>Punk, These</td><td>Vertrauenswürdig, bescheiden</td></tr>
+      </tbody>
+    </table>
+
+    <p class="hinweis">Jede Variant hat 8 Seiten: Startseite, Geschichten-Index, Einzelbeitrag, Manifest, Über mich, Kontakt, Impressum &amp; Datenschutz, 404. Statisches HTML und CSS, keine Skripte, keine Webfonts, keine Cookies.</p>
+  </main>
+</body>
+</html>
